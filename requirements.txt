@@ -1,0 +1,11 @@
+# All free/open-source. No paid packages or API clients.
+requests>=2.31
+beautifulsoup4>=4.12
+lxml>=5.0
+reportlab>=4.0
+pypdf>=5.0          # Part 3C: text extraction from IBBI's "Details" PDF
+python-dotenv>=1.0  # Part 6A: load GEMINI_API_KEY from a local .env (optional,
+                     # falls back to a real shell env var if not installed)
+# Part 6A calls Gemini directly over HTTP with `requests` above -- no
+# google-generativeai SDK dependency, keeps this list small and the call
+# itself easy to see/audit in ai_analysis/gemini_narrative.py.
