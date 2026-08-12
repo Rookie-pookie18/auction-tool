@@ -68,6 +68,7 @@ card says so plainly rather than showing an empty narrative silently.
 
 from __future__ import annotations
 
+import html
 import json
 import os
 from datetime import date, datetime
@@ -351,13 +352,25 @@ _STYLE_EMPTY = ParagraphStyle("Empty", parent=_styles["Normal"], fontSize=9.5, t
 
 
 def _facts_table(raw: dict) -> Table:
+    # Plain strings in a Table cell are drawn as ONE unwrapped line and
+    # silently clip at the column edge -- reportlab only wraps text that's
+    # inside a Paragraph flowable. Location/nature_of_assets are the two
+    # longest free-text fields here, so they're the ones that visibly hit
+    # the wall (bug found from a real report render, 2026-08-13). Escaping
+    # via html.escape matters now that these values go through Paragraph's
+    # mini-XML parser -- raw scraped text containing "&"/"<"/">" (e.g.
+    # "Plant & Machinery") would otherwise break the parse or vanish
+    # silently instead of just clipping.
+    def cell(text: str) -> Paragraph:
+        return Paragraph(html.escape(str(text)), _STYLE_BODY)
+
     rows = [
-        ["Reserve price", _fmt_currency(raw.get("reserve_price"))],
-        ["Location", raw.get("location") or "not yet known"],
-        ["Auction date", _fmt_date(raw.get("auction_date"))],
-        ["EMD due date", _fmt_date(raw.get("emd_due_date"))],
-        ["IP / liquidator", raw.get("ip_name") or "unknown"],
-        ["Nature of assets", raw.get("nature_of_assets") or "unknown"],
+        [cell("Reserve price"), cell(_fmt_currency(raw.get("reserve_price")))],
+        [cell("Location"), cell(raw.get("location") or "not yet known")],
+        [cell("Auction date"), cell(_fmt_date(raw.get("auction_date")))],
+        [cell("EMD due date"), cell(_fmt_date(raw.get("emd_due_date")))],
+        [cell("IP / liquidator"), cell(raw.get("ip_name") or "unknown")],
+        [cell("Nature of assets"), cell(raw.get("nature_of_assets") or "unknown")],
     ]
     t = Table(rows, colWidths=[3.3 * cm, 12 * cm])
     t.setStyle(TableStyle([
