@@ -61,7 +61,7 @@ permissions:
 jobs:
   run-report:
     runs-on: ubuntu-latest
-    timeout-minutes: 60   # this project's own real-run timing (Part 7A/8A
+    timeout-minutes: 240   # this project's own real-run timing (Part 7A/8A
                            # confirmations) never approached this; a
                            # generous ceiling in case Gemini/MCA/news
                            # retries stack up on a bad day, not a tight
