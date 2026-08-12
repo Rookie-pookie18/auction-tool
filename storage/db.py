@@ -85,6 +85,22 @@ CREATE TABLE IF NOT EXISTS listings (
     flags            TEXT,     -- JSON list, stored as text
     details_pdf_parsed INTEGER DEFAULT 0,
 
+    -- Added 2026-08-13, alongside the pipeline.py PDF-fetch-gating fix
+    -- (see that file's module docstring): Part 5B's possession_status/
+    -- land_classification were previously never persisted anywhere --
+    -- only ever held in memory for the run that parsed them, then
+    -- discarded. That was fine when every listing's notice PDF was
+    -- re-fetched every single day regardless, but it's a blocker for
+    -- skipping that re-fetch on unchanged listings, since scoring (Part
+    -- 5) needs these two fields for EVERY currently-active listing, not
+    -- just ones fetched this run. notice_pdf_parsed is stored for the
+    -- same reason details_pdf_parsed already was: so a later run can
+    -- tell "never successfully parsed, worth retrying" apart from
+    -- "parsed, nothing there" without re-fetching to find out.
+    possession_status   TEXT,
+    land_classification TEXT,
+    notice_pdf_parsed   INTEGER DEFAULT 0,
+
     first_seen_at    TEXT NOT NULL,
     last_seen_at     TEXT NOT NULL,
     raw_json         TEXT NOT NULL   -- full record snapshot, for audit/debug
@@ -161,7 +177,32 @@ def get_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
     conn.commit()
+    _migrate_listings_columns(conn)
     return conn
+
+
+# Columns added to `listings` after the table already existed in the
+# owner's committed data/auctions.db. CREATE TABLE IF NOT EXISTS (in
+# SCHEMA above) only helps a brand-new DB -- an already-existing table
+# keeps whatever columns it had when it was first created, so anything
+# added later needs an explicit ALTER TABLE here too, or every run
+# against the real committed DB would crash with "no such column" the
+# moment upsert_listing()/classify_pending() below try to read/write one
+# of these. Safe to run every time get_connection() is called: each
+# ALTER TABLE is skipped once the column already exists.
+_LISTINGS_COLUMN_MIGRATIONS = {
+    "possession_status": "TEXT",
+    "land_classification": "TEXT",
+    "notice_pdf_parsed": "INTEGER DEFAULT 0",
+}
+
+
+def _migrate_listings_columns(conn: sqlite3.Connection) -> None:
+    existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(listings)")}
+    for col, coltype in _LISTINGS_COLUMN_MIGRATIONS.items():
+        if col not in existing_cols:
+            conn.execute(f"ALTER TABLE listings ADD COLUMN {col} {coltype}")
+    conn.commit()
 
 
 def _norm(value) -> str:
@@ -223,8 +264,9 @@ def upsert_listing(conn: sqlite3.Connection, record) -> dict:
                 emd_due_date, notice_pdf_url, details_pdf_url, cin,
                 emd_amount, location, auction_platform, auction_platform_url,
                 plot_area_mentions, flags, details_pdf_parsed,
+                possession_status, land_classification, notice_pdf_parsed,
                 first_seen_at, last_seen_at, raw_json
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 key,
@@ -246,6 +288,9 @@ def upsert_listing(conn: sqlite3.Connection, record) -> dict:
                 json.dumps(rec.get("plot_area_mentions") or []),
                 json.dumps(rec.get("flags") or []),
                 int(bool(rec.get("details_pdf_parsed"))),
+                rec.get("possession_status"),
+                rec.get("land_classification"),
+                int(bool(rec.get("notice_pdf_parsed"))),
                 now,
                 now,
                 json.dumps(rec, default=str),
@@ -294,9 +339,38 @@ def upsert_listing(conn: sqlite3.Connection, record) -> dict:
                     pass
 
     if not changes:
+        # Still write the PDF-derived fields here, not just last_seen_at:
+        # as of the 2026-08-13 pipeline.py fix, an "unchanged" listing
+        # whose PDFs weren't successfully parsed on an earlier run gets
+        # RE-fetched (see pipeline.py's need_details_idx/need_notice_idx),
+        # even though its tracked fields never changed. If this branch
+        # only touched last_seen_at, that retry's result would be
+        # computed and then silently thrown away every single run,
+        # forever. For a listing whose PDFs were reused from the DB
+        # rather than re-fetched this run, these values are already
+        # identical to what's stored, so this is a harmless no-op write.
         conn.execute(
-            "UPDATE listings SET last_seen_at = ? WHERE listing_key = ?",
-            (now, key),
+            """
+            UPDATE listings SET
+                notice_pdf_url = ?, details_pdf_url = ?, cin = ?,
+                emd_amount = ?, location = ?, auction_platform = ?,
+                auction_platform_url = ?, plot_area_mentions = ?, flags = ?,
+                details_pdf_parsed = ?, possession_status = ?,
+                land_classification = ?, notice_pdf_parsed = ?,
+                last_seen_at = ?
+            WHERE listing_key = ?
+            """,
+            (
+                rec.get("notice_pdf_url"), rec.get("details_pdf_url"),
+                rec.get("cin"), rec.get("emd_amount"), rec.get("location"),
+                rec.get("auction_platform"), rec.get("auction_platform_url"),
+                json.dumps(rec.get("plot_area_mentions") or []),
+                json.dumps(rec.get("flags") or []),
+                int(bool(rec.get("details_pdf_parsed"))),
+                rec.get("possession_status"), rec.get("land_classification"),
+                int(bool(rec.get("notice_pdf_parsed"))),
+                now, key,
+            ),
         )
         conn.commit()
         return {"status": "unchanged", "listing_key": key}
@@ -321,7 +395,9 @@ def upsert_listing(conn: sqlite3.Connection, record) -> dict:
             emd_due_date = ?, notice_pdf_url = ?, details_pdf_url = ?,
             cin = ?, emd_amount = ?, location = ?, auction_platform = ?,
             auction_platform_url = ?, plot_area_mentions = ?, flags = ?,
-            details_pdf_parsed = ?, last_seen_at = ?, raw_json = ?
+            details_pdf_parsed = ?, possession_status = ?,
+            land_classification = ?, notice_pdf_parsed = ?,
+            last_seen_at = ?, raw_json = ?
         WHERE listing_key = ?
         """,
         (
@@ -333,11 +409,77 @@ def upsert_listing(conn: sqlite3.Connection, record) -> dict:
             json.dumps(rec.get("plot_area_mentions") or []),
             json.dumps(rec.get("flags") or []),
             int(bool(rec.get("details_pdf_parsed"))),
+            rec.get("possession_status"), rec.get("land_classification"),
+            int(bool(rec.get("notice_pdf_parsed"))),
             now, json.dumps(rec, default=str), key,
         ),
     )
     conn.commit()
     return {"status": "changed", "listing_key": key, "changes": changes, "price_drop": price_drop}
+
+
+def get_listing(conn: sqlite3.Connection, listing_key: str) -> Optional[dict]:
+    """Fetch the current stored row for one listing_key, or None if it has
+    never been seen. Read-only. Added 2026-08-13 alongside classify_pending
+    below, for the same reason: pipeline.py needs to look at what's
+    already stored BEFORE deciding whether Part 3C/5B PDF enrichment is
+    worth fetching this run."""
+    cur = conn.execute("SELECT * FROM listings WHERE listing_key = ?", (listing_key,))
+    row = cur.fetchone()
+    return dict(row) if row is not None else None
+
+
+def classify_pending(conn: sqlite3.Connection, record) -> dict:
+    """
+    Read-only preview of what upsert_listing() would decide for this
+    record -- same identity/collision/tracked-field diff rules, but
+    nothing is written or committed.
+
+    WHY THIS EXISTS (2026-08-13, alongside the pipeline.py PDF-fetch-
+    gating fix -- see that file's module docstring for the full story):
+    Part 3C (enrich_all_with_details) and Part 5B (enrich_all_with_notice)
+    used to run unconditionally on every single scraped record, every
+    single day, regardless of whether that listing had changed since
+    yesterday. Against the real site's ~484 pages / ~9,700 listings, at
+    ~3s/PDF/listing that is 16+ hours of pure network-fetch delay alone --
+    confirmed the hard way: a real run hit GitHub Actions' 4-hour job cap
+    without finishing. The fix is to only fetch a listing's PDFs when the
+    listing is new, changed, or was never successfully parsed before --
+    but the pipeline needs to know WHICH of those applies BEFORE running
+    the (slow, network) enrichment, while the real write (store_records())
+    can only safely happen AFTER enrichment, once cin/location/
+    possession_status/etc. are final for this run. Hence a read-only
+    preview pass first.
+
+    Deliberately kept close to upsert_listing()'s own diff logic just
+    below -- if you change one, check the other; a real write later in
+    the same run always wins if the two ever disagree (classify_pending
+    itself changes nothing).
+
+    Returns:
+      {"status": "new" | "unchanged" | "changed" | "collision",
+       "listing_key": str,
+       "existing": dict | None}   -- current stored row, or None if new
+    """
+    rec = _record_to_dict(record)
+    key = build_listing_key(rec)
+
+    cur = conn.execute("SELECT * FROM listings WHERE listing_key = ?", (key,))
+    row = cur.fetchone()
+    if row is None:
+        return {"status": "new", "listing_key": key, "existing": None}
+
+    existing = dict(row)
+
+    for f in IDENTITY_FIELDS:
+        if _norm(existing[f]) != _norm(rec.get(f)):
+            return {"status": "collision", "listing_key": key, "existing": existing}
+
+    for f in TRACKED_FIELDS:
+        if _norm(existing[f]) != _norm(rec.get(f)):
+            return {"status": "changed", "listing_key": key, "existing": existing}
+
+    return {"status": "unchanged", "listing_key": key, "existing": existing}
 
 
 def store_records(conn: sqlite3.Connection, records: list) -> dict:
