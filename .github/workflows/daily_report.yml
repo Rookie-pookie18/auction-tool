@@ -80,7 +80,8 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
-        - name: Download MCA company master data
+
+      - name: Download MCA company master data
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
