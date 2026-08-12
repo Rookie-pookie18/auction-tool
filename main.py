@@ -68,6 +68,7 @@ print(f"Using DB: {config.DB_PATH}")
 # the site's full current listing set (max_pages=None).
 result = run_pipeline(max_pages=None, db_path=None)
 print(f"  store_summary: {result['store_summary']}")
+print(f"  pdf_fetch_summary: {result['pdf_fetch_summary']}")
 print(f"  enrichment_summary: {result['enrichment_summary']}")
 print(f"  scrape_problems: {len(result['scrape_problems'])}")
 print(f"  assembled listings: {len(result['assembled'])}")
