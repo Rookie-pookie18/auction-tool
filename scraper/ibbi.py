@@ -385,6 +385,7 @@ def parse_listing_table(html: str) -> tuple[list[IBBIRecord], list[dict]]:
 def scrape_all_pages(
     max_pages: Optional[int] = None,
     delay_seconds: Optional[float] = None,
+    cutoff_date: Optional[date] = None,
 ) -> tuple[list[IBBIRecord], list[dict]]:
     """Loop across listing pages, reusing fetch_page/parse_listing_table
     (already network-confirmed for a single page — see module docstring).
@@ -397,6 +398,18 @@ def scrape_all_pages(
     delay_seconds: pause between page requests. Defaults to
         config.REQUEST_DELAY_SECONDS (matched to "once a day" use, not a
         hammering pace — see config.py).
+    cutoff_date: added 2026-08-13. Stop paginating once a page's rows are
+        entirely older than this date, then trim the final result to only
+        keep rows with notice_date >= cutoff_date (rows with an
+        unparseable/missing notice_date are kept, not dropped — never
+        guess a row is irrelevant just because its date didn't parse).
+        Confirmed by a real fetch against the live site (owner's request,
+        2026-08-13) that with no sort params, page 1 is already
+        newest-first, so this early-stop is safe without adding any sort
+        query param. None (the default caller value, see config.
+        SCRAPE_WINDOW_DAYS) disables this — walks every page like before.
+        Interacts with max_pages as "whichever stops first": if max_pages
+        is also set, pagination stops at whichever limit is hit first.
 
     Stops early (without erroring) if a page comes back with 0 rows, on
     the assumption that means we've run past the last real page — this
@@ -428,6 +441,18 @@ def scrape_all_pages(
     else:
         page_limit = 1  # couldn't determine page count and no override given
 
+    def _page_entirely_older_than_cutoff(page_recs: list) -> bool:
+        dated = [r.notice_date for r in page_recs if r.notice_date is not None]
+        return bool(dated) and max(dated) < cutoff_date
+
+    if cutoff_date is not None and _page_entirely_older_than_cutoff(recs):
+        all_problems.append({
+            "page": 1,
+            "reason": f"stopped after page 1: every dated row is already "
+                      f"older than cutoff_date={cutoff_date.isoformat()}",
+        })
+        page_limit = 1  # nothing more to fetch
+
     page = 2
     while page <= page_limit:
         time.sleep(delay)
@@ -457,6 +482,16 @@ def scrape_all_pages(
             r.source_page = page
         all_records.extend(recs)
         all_problems.extend(problems)
+
+        if cutoff_date is not None and _page_entirely_older_than_cutoff(recs):
+            all_problems.append({
+                "page": page,
+                "reason": f"stopped after page {page}: every dated row is "
+                          f"already older than cutoff_date={cutoff_date.isoformat()} "
+                          f"(pages walked newest-first, confirmed 2026-08-13)",
+            })
+            break
+
         page += 1
 
     # Real-run finding (2026-08-09, owner-confirmed): IBBI's ?page=N
@@ -481,6 +516,25 @@ def scrape_all_pages(
             continue
         seen_keys.add(key)
         deduped.append(rec)
+
+    if cutoff_date is not None:
+        before = len(deduped)
+        # Keep a row if its notice_date is on/after the cutoff, OR if
+        # notice_date didn't parse at all -- never silently drop a row
+        # just because we can't confirm its age, same "flag, don't guess"
+        # rule as everywhere else in this module.
+        deduped = [
+            r for r in deduped
+            if r.notice_date is None or r.notice_date >= cutoff_date
+        ]
+        trimmed = before - len(deduped)
+        if trimmed:
+            all_problems.append({
+                "reason": f"{trimmed} row(s) trimmed after the fact: dated "
+                          f"older than cutoff_date={cutoff_date.isoformat()} "
+                          f"but included in the last page fetched before the "
+                          f"early-stop check fired",
+            })
 
     return deduped, all_problems
 
