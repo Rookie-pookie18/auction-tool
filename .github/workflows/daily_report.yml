@@ -80,14 +80,16 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
-
-      - name: Download MCA company master data
-        # Decision (30), Step 3 -- verbatim from PROJECT_STATUS.md.
+        - name: Download MCA company master data
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p data/mca_company_master
-          curl -L -o mca_company_master.zip \
-            "https://github.com/${{ github.repository }}/releases/download/mca-data-v1/mca_company_master.zip"
-          unzip -o mca_company_master.zip -d data/mca_company_master
+          gh release download mca-data-v1 \
+            -R ${{ github.repository }} \
+            -p "mca_company_master.zip" \
+            -D data/mca_company_master
+          unzip -o data/mca_company_master/mca_company_master.zip -d data/mca_company_master
 
       - name: Run daily pipeline (scrape, score, enrich, PDF, email)
         env:
