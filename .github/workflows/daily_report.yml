@@ -1,0 +1,114 @@
+# Part 8B: daily scheduled run on a GitHub-hosted runner (ubuntu-latest).
+#
+# Two things this workflow has to get right that a purely local run
+# doesn't (see PROJECT_STATUS.md decisions (30) and (31) for the full
+# reasoning behind both -- this file is the direct build-out of both,
+# not a re-derivation):
+#
+#   1. MCA company-master data (decision (30)): the 15 state CSVs are
+#      deliberately NOT in this repo (too big, see decision (29)) -- the
+#      "Download MCA company master data" step below pulls them from the
+#      mca-data-v1 GitHub Release before the pipeline runs.
+#
+#   2. data/auctions.db persistence (decision (31)): GitHub-hosted
+#      runners are ephemeral -- a fresh VM every run, nothing on disk
+#      survives between runs on its own. Without the "Commit updated
+#      DB back to the repo" step below, Part 7A's whole new/changed/
+#      unchanged + enrichment-reuse mechanism would be pointless on a
+#      schedule: every run would see every listing as brand new and
+#      re-spend a full day's Gemini/MCA/news quota re-enriching
+#      everything it already knew. This step is what makes the DB this
+#      run wrote actually be there for tomorrow's run to read.
+#
+# Required repo secrets (Settings -> Secrets and variables -> Actions):
+#   GEMINI_API_KEY     -- Part 6A, https://aistudio.google.com/apikey
+#   SMTP_APP_PASSWORD  -- Part 8A, https://myaccount.google.com/apppasswords
+#   EMAIL_FROM         -- the Gmail address the App Password belongs to
+#   EMAIL_TO           -- where the report should land (can equal EMAIL_FROM)
+# (EMAIL_FROM/EMAIL_TO aren't secret in the sensitive-credential sense, but
+# stored as Actions secrets anyway for simplicity -- one place for every
+# per-owner value this workflow needs, none of it in a tracked file. Repo
+# "variables" instead of "secrets" would work equally well for these two
+# specifically, if the owner prefers that split later.)
+
+name: Daily auction report
+
+on:
+  schedule:
+    # 00:30 UTC = 06:00 IST -- a "morning report" default. Claude-picked,
+    # not owner-specified (same status as REPORT_TOP_N etc. in config.py)
+    # -- change the cron string below any time; GitHub Actions schedules
+    # are always UTC, so keep that offset in mind when tuning it.
+    - cron: "30 0 * * *"
+  workflow_dispatch: {}   # lets the owner trigger a real run manually from
+                          # the Actions tab, e.g. for the first-ever
+                          # confirmation run, without waiting for 06:00 IST.
+
+# Prevents two runs from overlapping and racing to commit/push
+# data/auctions.db (e.g. a manual workflow_dispatch fired close to the
+# scheduled run). Never cancels an in-progress run -- a half-finished run
+# would leave the DB in an inconsistent state; queue instead of cancel.
+concurrency:
+  group: daily-auction-report
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # required for the commit-back-to-repo step; the
+                     # default GITHUB_TOKEN is read-only on many repos
+                     # (especially private ones / newer org defaults)
+                     # unless a workflow explicitly asks for write here.
+
+jobs:
+  run-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60   # this project's own real-run timing (Part 7A/8A
+                           # confirmations) never approached this; a
+                           # generous ceiling in case Gemini/MCA/news
+                           # retries stack up on a bad day, not a tight
+                           # estimate.
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+        # persist-credentials defaults to true, which is required for the
+        # push step below to authenticate as this workflow's GITHUB_TOKEN.
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download MCA company master data
+        # Decision (30), Step 3 -- verbatim from PROJECT_STATUS.md.
+        run: |
+          mkdir -p data/mca_company_master
+          curl -L -o mca_company_master.zip \
+            "https://github.com/${{ github.repository }}/releases/download/mca-data-v1/mca_company_master.zip"
+          unzip -o mca_company_master.zip -d data/mca_company_master
+
+      - name: Run daily pipeline (scrape, score, enrich, PDF, email)
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SMTP_APP_PASSWORD: ${{ secrets.SMTP_APP_PASSWORD }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        run: python main.py
+
+      - name: Commit updated DB back to the repo
+        # Decision (31) -- the actual persistence fix. data/auctions.db is
+        # now a TRACKED file (see .gitignore's decision (31) comment), so
+        # a plain `git add` + `git commit` + `git push` here is enough --
+        # no cache action, no artifact upload/download, no extra service.
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/auctions.db
+          if git diff --cached --quiet; then
+            echo "No changes to data/auctions.db this run -- nothing to commit."
+          else
+            git commit -m "Update auctions.db ($(date -u +%Y-%m-%d) run) [skip ci]"
+            git push
+          fi

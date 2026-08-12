@@ -261,34 +261,53 @@ Phase 3+, one at a time, robots.txt/ToS check each before building.
       re-run for every listing on every run. **Neither sub-part is built
       yet — this was a decisions-only session, no implementation code
       written (owner's explicit instruction for this session).**
-  - [ ] **7A — Pipeline orchestrator + enrichment persistence** — new,
+  - [x] **7A — Pipeline orchestrator + enrichment persistence** — new,
         not previously planned as its own sub-part. Chains scrape → store
         (Part 4, unchanged) → score (Part 5, always recomputed fresh
         in-memory over that day's full batch — see decision log for why
         scores are never persisted) → Part 6's three enrichment modules,
-        but only for listings `store_records()` reports as `new` or
-        `changed` (plus any listing that has never been successfully
-        enriched before) — reusing prior enrichment for `unchanged`
-        listings instead of re-spending Gemini/MCA/DuckDuckGo quota.
-        Requires one new additive DB table (`enrichment`, keyed on
-        `listing_key`) in `storage/db.py` — no changes to the existing
-        `listings`/`listing_history`/`collisions` tables. This becomes
-        the single entry point Part 8B's cron eventually invokes.
-  - [ ] **7B — PDF layout + report categorization** — reportlab layout
-        consuming 7A's assembled per-listing dataset (raw scraped fields
-        + that day's fresh score + enrichment data, whether freshly
-        generated or reused, each still carrying its own module's
-        honesty/"unverified" labeling). Groups per Section 1: top-scored
-        → closing soon → new today → watchlist changes — the latter two
-        read `new`/`changed` status and field-level diffs straight from
-        7A's `store_records()` call / `listing_history`, not a second DB
-        query. Split further only if layout work alone makes this too
-        big to finish + test in one response, per Section 0 rule 4.
+        but only for listings that `needs_reenrichment()` says need it —
+        reusing prior enrichment for everything else instead of
+        re-spending Gemini/MCA/DuckDuckGo quota. **Storage-layer half DONE
+        (2026-08-11): `enrichment` table + `get_enrichment()`/
+        `needs_reenrichment()`/`upsert_enrichment()` in `storage/db.py`.**
+        **Orchestrator itself now BUILT (2026-08-11, this session):
+        `pipeline.py` at the repo root (filename/location decided + flagged
+        this session — see that file's own module docstring for the
+        reasoning), `run_pipeline()`. Confirmed on a real offline wiring
+        smoke test only (synthetic data, monkeypatched network calls, 4
+        passes — new/reuse/selective-reenrich/collision-skip all correct;
+        see `pipeline.py`'s own `__main__` block). `test_part7a.py`
+        written for the real small-batch confirmation this project's
+        "never overstate testing" rule requires. **RUN FOR REAL
+        (2026-08-11) — owner ran it on their own machine against live
+        IBBI, pasted back the full raw output (not a summary), verified
+        line-by-line: pass 1 20 new/20 enriched, pass 2 18 unchanged/18
+        reused + 2 genuinely new, real Gemini timeout + quota-exceeded
+        failures both flagged not crashed, no tracebacks. See "Part 7A
+        confirmed against the real chain" in the decision log above.
+        7A is DONE.**
+
+  - [x] **7B — PDF layout + report categorization** — DONE (2026-08-11).
+        `report/pdf.py`: `categorize_assembled()` + `generate_report()`
+        (reportlab platypus), consuming 7A's assembled dataset directly,
+        no second DB query. Confirmed for real in-sandbox (no network
+        needed for this part) via `test_part7b.py`: real PDF built from
+        synthetic data covering every category + edge case, read back
+        with pypdf, all 17 expected substrings present, 0 crashes
+        including on a listing with nothing populated at all. One real
+        bug found + fixed via visual check: the ₹ glyph rendered as a
+        solid black box in reportlab's default font — switched to "Rs."
+        prefix. See decision log below for full detail.
 - [ ] **Part 8 — Email delivery + GitHub Actions cron** — split per
       Section 0 rule 4: two genuinely different systems, each needing
       its own real-world confirmation.
-  - [ ] **8A — Email delivery** — owner supplies SMTP creds locally, real
-        send test confirmed.
+  - [x] **8A — Email delivery** — DONE (2026-08-11), confirmed on a real
+        send: owner ran `test_part8a.py` (Windows, real Gmail App
+        Password), email arrived and opened correctly. One real bug
+        found + fixed: `run_pipeline()` never closed its SQLite
+        connection, which blocked deleting the throwaway test DB on
+        Windows (harmless on Linux) — fixed with a `finally: conn.close()`.
   - [ ] **8B — GitHub Actions cron** — wiring + one real scheduled run
         confirmed before calling Phase 1 done. **DECIDED (2026-08-11,
         owner-confirmed): Option B, runtime download from a GitHub
@@ -299,12 +318,84 @@ Phase 3+, one at a time, robots.txt/ToS check each before building.
         directly conflicts with Section 1's "must-have, automatic every
         morning" requirement. GitHub-hosted runners (`ubuntu-latest`)
         have no such dependency. See decision (30) for the full
-        reasoning and — this is the important part for whoever builds
-        8B — the complete, precise implementation spec: exact Release
-        setup steps, workflow YAML, and the download step, written so
-        this can be built with minimal re-deciding.
+        reasoning and precise implementation spec (Release setup steps,
+        the MCA-data download step). **BUILT (2026-08-11, this session):
+        owner caught a real second gap before this could actually work —
+        see decision (31) — that decision's fix is now built alongside
+        30's spec, not deferred:** `.github/workflows/daily_report.yml`
+        (scrape→score→enrich→PDF→email on a cron schedule, decision
+        (30)'s MCA-data download step, plus a commit-the-DB-back step per
+        decision (31)); `main.py` (new — the real production entry point
+        against `config.DB_PATH`/full `max_pages=None`, distinct from
+        `test_part8a.py`'s throwaway-DB confirmation run — see that
+        file's own docstring for why a separate script was needed);
+        `.gitignore` (now tracks `data/auctions.db` instead of ignoring
+        it — the whole point of decision (31)); `config.py` (`EMAIL_FROM`/
+        `EMAIL_TO` now read an env var first, same pattern as
+        `SMTP_PASSWORD`/`GEMINI_API_KEY`, since a hosted runner has no way
+        to reach a "the owner edits config.py locally" value). **NOT YET
+        CONFIRMED** — this sandbox has no network and can't push to
+        GitHub or trigger real Actions runs (Section 0 rule 2), so, same
+        pattern as every other real-network/real-infrastructure part in
+        this project, this is built but unrun. 8B stays unticked until
+        the owner: (1) pushes this to GitHub, (2) adds the four repo
+        secrets (`GEMINI_API_KEY`, `SMTP_APP_PASSWORD`, `EMAIL_FROM`,
+        `EMAIL_TO`) — README.md's new Part 8B section has the exact
+        steps, (3) confirms the `mca-data-v1` Release still exists
+        (decision (30)), (4) triggers one real run via the Actions tab's
+        `workflow_dispatch` button (don't wait for the 06:00 IST
+        schedule to find out if it works), and (5) confirms three things
+        and reports back: the run went green, the email actually
+        arrived, AND a new commit from `github-actions[bot]` updated
+        `data/auctions.db` on `main` afterward — that third check is the
+        one decision (31) exists for; a green run alone doesn't prove
+        persistence is actually working.
 
-**Known open issues:** this file is now ~1030 lines, past the ~500-550
+**Known open issues:**
+- Part 8A real full run (2026-08-11, owner's Windows machine): PDF
+  confirmed correct in production, not just synthetic tests — all four
+  sections rendered in the right order including a clean "None today"
+  for an empty Watchlist changes section, and the Rs.-prefix fix held
+  with no glyph issues. Two real, expected conditions surfaced, neither
+  a code bug: (1) 19/20 Gemini narrative calls failed with a real HTTP
+  429 quota-exceeded error — likely the free tier's *daily* cap, since
+  this run's 20 calls came on top of earlier sessions' `test_part6a`/
+  `test_part7a` calls the same account already made; each failure was
+  flagged per-listing exactly as designed, batch did not crash. (2) MCA
+  lookups mostly skipped with "no local MCA data file for state X" —
+  expected, since the 15 confirmed state CSVs were deliberately kept out
+  of the zip (decision (29)) and this particular machine hasn't
+  downloaded them yet. **Not a new problem to solve separately** — 8B's
+  already-decided runtime-download-from-GitHub-Release step (decision
+  (30)) is exactly what wires MCA data onto any machine automatically;
+  this resolves itself once 8B is built, no separate fix needed.
+- Part 8A build (2026-08-11): confirmed on a real Windows send — email
+  arrived correctly. Real bug found during that run + fixed:
+  `run_pipeline()` (`pipeline.py`) never closed its SQLite connection,
+  which is harmless on Linux but blocked Windows from deleting the
+  throwaway test DB afterward (`PermissionError`, file still in use) —
+  fixed by wrapping the function body in `try`/`finally: conn.close()`.
+  Re-confirmed offline afterward: all 4 of `pipeline.py`'s own smoke-test
+  passes still pass with no regressions. Resolved.
+- Part 7B (2026-08-11): `combined_score()` (`report/pdf.py`) is a plain
+  average of whatever 5A/5B/5C partial scores exist — an explicitly-labeled
+  placeholder, not the real weighted ranking (`config.SCORE_WEIGHTS` is
+  still all `None`). The PDF itself says so under "Top-scored"; worth
+  revisiting once the owner sets real weights — swap the averaging logic
+  in `combined_score()` for the real weighted sum at that point. Also: a
+  listing can appear in more than one section (e.g. top-scored AND closing
+  soon) — a deliberate default (see `report/pdf.py`'s module docstring),
+  not a bug, but flagged here in case the owner would rather de-duplicate.
+- Part 7A build (2026-08-11): `data/*.db` was never in `.gitignore` (neither
+  the real DB nor test_part7a.py's throwaway test DB) — added as a small
+  precaution, same spirit as decision (30)'s `.gitignore` fix. Also: a
+  "collision" listing now deliberately skips Part 6 enrichment for that
+  run (see pipeline.py's module docstring) rather than risk writing into
+  another listing's enrichment row — untested against a REAL collision
+  (can't be forced synthetically, same as storage/db.py's own caveat),
+  only against a forced-status unit test; worth double-checking if a real
+  one ever actually occurs.
+This file is now ~1030 lines, past the ~500-550
 line guidance in Section 0 rule 5 (grew further this session — the 6B/6C
 merge decision log entry above). Not trimmed this session — the merge
 task itself didn't authorize a full re-baseline (Section 0 rule 5 needs
@@ -832,14 +923,310 @@ anywhere and is still unconfirmed.
   `lookup_company_by_cin()` return a genuine match during that run — not
   just that the workflow doesn't error. Ready to build once 7A/7B are
   done; not blocked on anything else.
+- **(31) data/auctions.db persistence across ephemeral runners —
+  real gap caught by the owner (2026-08-11, before 8B build started this
+  session):** decision (30) fully specs how MCA *reference* data gets
+  onto a hosted runner, but says nothing about the pipeline's own working
+  *state* — `data/auctions.db` — which is a completely different problem
+  decision (30) never actually covered. GitHub-hosted runners are
+  ephemeral: a fresh VM every run, nothing on the runner's local disk
+  carries over to the next one. `data/auctions.db` has been gitignored
+  since Part 7A (see that gitignore entry's own original comment — "keep
+  local dev/test DBs out of git"), which was the right call for a
+  chat-session/local-dev workflow but is silently fatal for a scheduled
+  job: with the DB never persisting anywhere, every single cron run would
+  `git checkout` a repo with no DB, `get_connection()` would create a
+  brand-new empty one, and `store_records()` would see every listing —
+  including ones scored/enriched dozens of times before — as `new`. That
+  doesn't just mean a noisier report; it means Part 7A's whole
+  `needs_reenrichment()` reuse mechanism (the entire point of the
+  `enrichment` table) would never fire on a scheduled run, and a full
+  day's Gemini/MCA/news quota would be re-spent from scratch every
+  morning on listings the tool already had a complete write-up for.
+  **This would have made 8B technically "wire up successfully" while
+  silently defeating the reuse mechanism the last several parts were
+  built around — exactly the kind of gap this project's "confirm the
+  real chain, don't just confirm it doesn't error" rule exists to catch.**
+
+  **Options considered:**
+  - **`actions/cache`** — free, no extra service, but explicitly NOT
+    designed for state that must survive indefinitely: caches can be
+    evicted (GitHub's own eviction policy removes caches unused for 7
+    days, and enforces a 10GB-per-repo total cap with oldest-first
+    eviction beyond that) and a cache write on one run isn't guaranteed
+    visible to a later run the way a git commit is. Section 1's own
+    "automatic every morning" must-have makes a fine, silent, and
+    infrequent chance of a lost cache too risky to build the reuse
+    mechanism on — rejected for the same "must actually be reliable, not
+    just usually work" spirit as decision (30) rejecting a self-hosted
+    runner.
+  - **Commit `data/auctions.db` back to the repo after each run — chosen.**
+    The workflow's own `GITHUB_TOKEN` already has repo write access once
+    granted `permissions: contents: write`; a plain `git add`/`commit`/
+    `push` at the end of the run is the simplest mechanism that offers a
+    real persistence guarantee (git history), not a best-effort one, and
+    needs no new service/secret beyond what 8B already requires. Trade-
+    off, stated plainly: this adds one commit per day to `main`'s
+    history, forever — a deliberate, accepted cost for a personal-tool
+    repo, not an oversight. (A future refinement, not built now since it
+    wasn't asked for and adds complexity for a cosmetic benefit: park the
+    DB on a separate orphan branch instead of `main`, so daily DB commits
+    don't clutter the code-change history. Noted here for the record,
+    not acted on.)
+
+  **Implementation (built this session, see 8B's own checklist entry in
+  Section 3 for the exact file list):** `.gitignore`'s blanket
+  `data/*.db` rule is replaced with `data/test_*.db` (only the throwaway
+  test DBs need to stay ignored — the real DB now needs to be tracked,
+  the opposite of what the Part 7A-era rule did); the workflow's last
+  step commits `data/auctions.db` with `[skip ci]` in the message and a
+  no-op guard (`git diff --cached --quiet`) so a run with zero DB changes
+  doesn't create an empty commit; `concurrency: {group: ..., cancel-in-
+  progress: false}` at the workflow level queues rather than cancels a
+  second run (e.g. a manual `workflow_dispatch` fired close to the
+  schedule), since two overlapping runs racing to push the same file is
+  exactly the kind of thing that would corrupt this mechanism.
+
+  **A second, smaller gap found while building the fix (same session,
+  same "check the actual mechanism, don't assume" instinct that caught
+  the first one):** `test_part8a.py` was never the right script to point
+  a cron job at — it deliberately uses a throwaway tempfile DB (correct
+  for a one-off send confirmation, wrong for a job that needs its DB to
+  persist) and `max_pages=1` (correct for a small confirmation run, wrong
+  for a real daily pass over the site's full listing set). No production
+  entry point actually existed yet. Fixed: new `main.py` at the repo
+  root, run against `config.DB_PATH`/`max_pages=None`, is what the
+  workflow actually calls — `test_part8a.py` is untouched and keeps its
+  original one-off-confirmation job.
+
+  **A third, related gap, same root cause (config.py is a tracked file,
+  a hosted runner can't receive "the owner edits it locally"):**
+  `EMAIL_FROM`/`EMAIL_TO` were plain `None` in `config.py`, meant to be
+  filled in locally without being committed — that has no path onto a
+  GitHub-hosted runner at all. Fixed: both now read an env var first
+  (`os.environ.get(...)`), the same pattern `GEMINI_API_KEY`/
+  `SMTP_PASSWORD` already used — supplied via repo secrets in the
+  workflow, or a local `.env`/shell export, either way no change to how
+  the owner sets them locally.
+
+  **Testing this session:** no network available in this sandbox
+  (Section 0 rule 2, as always) — can't push to GitHub or trigger a real
+  Actions run. What WAS re-confirmed offline: `pipeline.py`'s own 4-pass
+  synthetic wiring smoke test still passes with no regressions from the
+  `config.py`/`.gitignore` changes; `main.py` and `config.py` both
+  import/compile cleanly; `main.py` correctly exits non-zero naming every
+  missing required setting when run with none set (matches
+  `test_part8a.py`'s own missing-config check, same pattern). **None of
+  this confirms the real thing decision (31) exists to fix** — that the
+  DB genuinely round-trips across two separate scheduled runs on a real
+  hosted runner — which needs the owner to push this, run it for real
+  (twice, ideally, to see reuse actually happen on the second run the
+  same way `test_part7a.py`'s pass 2 proved it locally), and report back.
+  See 8B's checklist entry in Section 3 for the exact confirmation steps.
 
 ---
 
 ## 4. Last updated
 *(Overwrite these fields only — see Rule 5 in Section 0.)*
 
-- **Position:** **PART 6B FULLY CONFIRMED, 15 states confirmed
-  owner-side; Part 8B storage strategy now FINALIZED (2026-08-11).** All
+- **Position:** **Part 8B BUILT, not yet confirmed (2026-08-11, new
+  session):** owner opened this session by flagging a real gap in the
+  existing spec before any 8B code got written: decision (30) fully
+  covers getting MCA reference data onto a GitHub-hosted runner, but
+  never addressed `data/auctions.db` itself persisting across runs —
+  without that, every scheduled run would see all listings as "new" and
+  burn a full day's Gemini/MCA/news quota re-enriching things Part 7A's
+  reuse mechanism already knew, silently defeating the point of that
+  mechanism while the workflow itself still ran "successfully." See
+  decision (31) for the full reasoning, options considered, and two
+  smaller related gaps found while fixing it (no real production entry
+  point existed yet; `EMAIL_FROM`/`EMAIL_TO` had no path onto a hosted
+  runner). **Built this session:** `.github/workflows/daily_report.yml`
+  (decision (30)'s MCA-data-download spec + decision (31)'s commit-DB-
+  back step, schedule + `workflow_dispatch`, `concurrency` guard,
+  `permissions: contents: write`); `main.py` (new production entry
+  point — real DB, real `max_pages=None`, distinct from
+  `test_part8a.py`); `.gitignore` (`data/auctions.db` now tracked,
+  `data/test_*.db` still ignored); `config.py` (`EMAIL_FROM`/`EMAIL_TO`
+  now env-var-driven); `README.md` (new Part 8A/8B setup sections).
+  **NOT YET CONFIRMED** — no network in this sandbox, so, same pattern as
+  every other real-infrastructure part in this project, this needs the
+  owner to push it, add the four repo secrets, trigger one real run via
+  `workflow_dispatch`, and confirm three things: the run went green, the
+  email arrived, AND a new `github-actions[bot]` commit updated
+  `data/auctions.db` on `main` afterward. **8B stays unticked in Section
+  3 until that real confirmation comes back — see that checklist entry
+  for the exact steps, and README.md's new Part 8B section for the
+  owner-facing version of the same steps.** Ideally run twice before
+  calling it fully confirmed (same reasoning as `test_part7a.py`'s pass
+  2): a second run is what actually proves reuse survived the round-trip,
+  not just that the first run didn't crash.
+  **Previous position (2026-08-11, same session-day, earlier), kept for
+  context — Part 8A real full-run confirmed in production (2026-08-11,
+  same session, after the send confirmation below):** owner shared the
+  actual generated `test_part8a_report.pdf` (not just console output) —
+  verified correct: all four sections (Top-scored / Closing soon / New
+  today / Watchlist changes) render in the right order, empty sections
+  show a clean "None today", and the `Rs.` prefix fix holds with no
+  glyph rendering issues in a real production PDF. Two real, expected
+  conditions found, neither a code bug (see Known Open Issues, Section
+  3, for full detail): Gemini hit a real daily quota 429 on 19/20
+  narrative calls (flagged per-listing, batch did not crash, exactly as
+  designed); MCA lookups mostly skipped since this machine hasn't
+  downloaded the 15 confirmed state CSVs yet (deliberately kept out of
+  the zip, decision (29)). **Owner confirmed this resolves itself once
+  Part 8B's already-decided runtime-download-from-GitHub-Release step
+  exists — no separate MCA-data fix needed, not treating this as new
+  work.** **Part 8A fully done. Next: Part 8B (GitHub Actions cron)** —
+  build directly from decision (30)'s spec below.
+  **Previous position (2026-08-11, earlier same session), kept for
+  context: Part 8A (email delivery) is now DONE and confirmed (real
+  send, same session continuing from the build below):** owner ran `test_part8a.py` for real on Windows (Gmail
+  address `dangsidak5@gmail.com`, real App Password) — small real
+  pipeline pass (max_pages=1: 20 new / 0 unchanged / 0 changed, all 20
+  freshly enriched), real PDF built (54,539 bytes), real email sent and
+  **confirmed arrived and opened correctly** (owner-confirmed). **One
+  real bug found + fixed:** `pipeline.py`'s `run_pipeline()` opened a
+  SQLite connection via `get_connection()` but never closed it — no
+  effect on Linux (files can be removed while a handle is open) but on
+  Windows this left the DB file locked, so `test_part8a.py`'s own
+  throwaway-DB cleanup failed with `PermissionError: ... being used by
+  another process` right after the email had already sent successfully
+  (the crash was in cleanup, after the real send — the send itself
+  worked). Fixed: the whole function body now runs inside
+  `try:`/`finally: conn.close()`. Re-confirmed offline afterward: all 4
+  of `pipeline.py`'s own synthetic wiring-smoke-test passes (Part 7A's
+  original coverage) still pass with no regressions from the
+  reindent/refactor. `test_part8a.py`'s own cleanup also hardened
+  (non-fatal `try`/`except OSError` around the temp-file removal) as a
+  belt-and-suspenders fallback, though the real fix is in `pipeline.py`.
+  **Part 8A ticked in Section 3. Next session: Part 8B (GitHub Actions
+  cron)** — full implementation spec (Option B, runtime download from
+  the already-live `mca-data-v1` GitHub Release) was already decided
+  2026-08-11, see decision (30) below, ready to build directly from it.
+  **Previous position (2026-08-11, earlier same session), kept for
+  context: Part 8A (email delivery) BUILT, not yet confirmed:**
+  `email_delivery/smtp_send.py` — `send_report_email()` sends the report
+  PDF as an attachment via Gmail SMTP (STARTTLS, port 587) using
+  `smtplib`/stdlib `email`, plain-text body from `build_summary_text()`
+  (new/changed/unchanged + enrichment reuse counts + per-section report
+  counts + up to 10 scrape-problem lines). `config.py` updated:
+  `SMTP_HOST` now defaults to `"smtp.gmail.com"` (Gmail confirmed
+  provider, Section 2); `EMAIL_FROM`/`EMAIL_TO` stay `None`/TBD, owner
+  fills in locally; new `SMTP_PASSWORD` reads `SMTP_APP_PASSWORD` from
+  the environment/`.env`, same never-hardcoded pattern as
+  `GEMINI_API_KEY` — no new `.gitignore` entry needed, `.env` already
+  covered. **Deliberately does NOT flag-and-continue like Parts 6A-6C**
+  — this is the last step of a run with nothing after it to protect, so
+  a real send failure raises instead of being silently swallowed (see
+  module docstring "FAILURE HANDLING" for the full reasoning). Config
+  validation (`_require_email_config()`) checked in-sandbox with a
+  synthetic call — confirmed it raises naming exactly which setting(s)
+  are missing rather than letting `smtplib` fail confusingly partway
+  through connect/login/send; `build_summary_text()` also checked
+  in-sandbox with synthetic run-summary data, output looked correct.
+  **Neither of those is a real send confirmation** — no network in this
+  sandbox (Section 0 rule 2), so, same as every other AI/network-layer
+  part, `test_part8a.py` (matching the `test_part6a/b/c.py`/
+  `test_part7a.py` convention) is written but **has NOT been run**. 8A
+  stays unticked in Section 3 until the owner: (1) turns on Gmail 2-Step
+  Verification and generates an App Password at
+  `https://myaccount.google.com/apppasswords`, (2) sets `EMAIL_FROM`/
+  `EMAIL_TO` in `config.py` and `SMTP_APP_PASSWORD` locally (`.env` or
+  shell), (3) runs `python test_part8a.py` (small real pipeline pass +
+  real PDF + real send) and pastes back the full output, including
+  confirming the email actually arrived. **Next session (not this one):
+  get that real send confirmed, tick 8A, then build 8B** (GitHub Actions
+  cron) — its full implementation spec (Option B, runtime download from
+  the already-live `mca-data-v1` GitHub Release) was already decided
+  2026-08-11, see decision (30), and is ready to build once 8A is
+  confirmed.
+  **Previous position (2026-08-11, earlier same day), kept for context:
+  Part 7B (PDF layout + report categorization) is now
+  DONE and confirmed (2026-08-11, this session, new session after Part
+  7A's real-chain confirmation below):** `report/pdf.py` —
+  `categorize_assembled()` splits `run_pipeline()`'s assembled dataset
+  into top-scored / closing-soon / new-today / watchlist-changes (per
+  Section 1's ordering) plus a collisions "flagged for review" section;
+  `generate_report()` renders it via reportlab platypus to
+  `config.REPORT_OUTPUT_DIR`. Confirmed for real, in-sandbox, no network
+  needed (PDF layout has no external dependency): `test_part7b.py` built
+  synthetic data covering every category + edge case, asserted correct
+  categorization, then read the actual generated PDF back with `pypdf`
+  and asserted 17 expected substrings all present. One real bug found
+  visually (not by the text-extraction assertions) and fixed: the ₹ glyph
+  isn't in reportlab's default font and rendered as a solid black box —
+  switched to a "Rs." prefix. **`combined_score()`'s ranking is an
+  explicitly-flagged placeholder** (plain average of available 5A/5B/5C
+  partials) since `config.SCORE_WEIGHTS` is still all `None` — see
+  Known Open Issues (Section 3) and "Part 7B built and confirmed" in the
+  decision log below for full detail. **Part 7 (both sub-parts) is now
+  fully done. Next action: Part 8A (email delivery) — needs the owner's
+  Gmail SMTP app-password supplied locally, then a real send test.**
+  **Previous position (2026-08-11, earlier same day), kept for context:
+  Part 7A's orchestrator is now BUILT:
+  `pipeline.py` (repo root — filename/location decided + flagged this
+  session, see that file's own module docstring), `run_pipeline()`,
+  chains scrape (Part 3C/5B PDF enrichment included, unconditional) →
+  `storage.db.store_records()` → fresh in-memory `score_batch_5a/5b/5c`
+  → per-listing `needs_reenrichment()` → Part 6's three modules only for
+  the subset that needs it → `upsert_enrichment()`/`get_enrichment()`
+  reuse → one assembled per-listing dataset, exactly per the Part 7
+  architecture decisions on record below.** Confirmed on a real offline
+  wiring smoke test only (4 passes, synthetic data, monkeypatched network
+  calls — see "Part 7A orchestrator built" in the decision log above for
+  the full breakdown, including the new collision-skip handling found and
+  fixed while wiring this). **`test_part7a.py` (real-network confirmation,
+  matching the test_part6a/b/c.py convention) is written but NOT YET RUN**
+  — this sandbox has no network, ever (Section 0 rule 2), so the real
+  small-batch pull this project's "never overstate testing" rule requires
+  has to happen on the owner's own machine. **7A therefore stays
+  unticked in Section 3 until the owner runs `python test_part7a.py` and
+  pastes back the output — that is the single next action.** 7B (PDF
+  layout) still can't start until 7A is confirmed against the real chain.
+  Small side fix this session: `data/*.db` added to `.gitignore` (was
+  never covered, neither the real DB nor the new test DB) — flagged in
+  Known Open Issues (Section 3) rather than assumed harmless.
+  **Previous position (2026-08-11, earlier same session-day), kept for
+  context: Part 7A's storage-layer half is now DONE:** `storage/db.py`
+  has the new `enrichment` table
+  (`listing_key`, `gemini_narrative_json`/`gemini_generated_at`,
+  `mca_data_json`/`mca_lookup_attempted`/`mca_looked_up_at`,
+  `news_data_json`/`news_flags_json`/`news_searched_at`, plus
+  `details_pdf_parsed_at_enrich`/`notice_pdf_parsed_at_enrich`) and
+  `get_enrichment()`/`needs_reenrichment()`/`upsert_enrichment()`,
+  confirmed on a real offline smoke test (6 assertions, synthetic data,
+  no network — see that test's own print output for the exact caveat).
+  This session started as a design review of the 2026-08-10 Part 7
+  architecture decisions (no code, per that session's own instruction)
+  and found one real gap in how re-enrichment gets triggered — see
+  "Part 7A enrichment-trigger refinement" in the decision log above for
+  the full reasoning — which the owner then asked to have implemented.
+  **Previous-previous position (2026-08-11, earlier same day), kept for
+  context:
+  PART 6B FULLY CONFIRMED, 15 states confirmed
+  owner-side; Part 8B storage strategy now FINALIZED (2026-08-11).**
+  **The `mca-data-v1` GitHub Release is now LIVE (2026-08-11)** — repo
+
+  created (`Sidak-dang/auction-tool`, private), code pushed to `main`
+  (with a `.gitignore` fix applied first — see below), and the Release
+  itself published with `mca_company_master.zip` (162MB / 169,982,357
+  bytes) attached as its one asset, exactly per decision (30)'s spec.
+  8B's runtime-download workflow step can now be built and tested
+  against a real live asset, not a hypothetical one. One real gap
+  surfaced during this: decision (30) Step 4 said a `.gitignore`
+  entry for `data/mca_company_master/*.csv` had been added, but the
+  zip handed off for this session did not actually contain a
+  `.gitignore` file — a real doc/zip mismatch, not just an
+  owner-side slip. Caught before any push happened (owner's local
+  folder had real state CSVs sitting in it with nothing to stop git
+  from tracking them); fixed by creating `.gitignore` locally with
+  Step 4's exact rule before the first successful commit, so no state
+  CSV ever entered git history. `.gitignore` now exists locally on the
+  owner's machine and in the pushed repo; **flagging here because the
+  zip this session started from should have had it and didn't — worth
+  double-checking the zip-building step that drops `.gitignore` isn't
+  silently skipping it.** All
   15 states (chandigarh, delhi, goa, gujarat, jammu_and_kashmir,
   jharkhand, karnataka, madhya_pradesh, maharashtra, odisha, punjab,
   sikkim, tamil_nadu, telangana, uttar_pradesh) have been
@@ -1380,3 +1767,212 @@ anywhere and is still unconfirmed.
   guessed) wiring Parts 4/5/6 together per the above, tested against a
   real small-batch run before 7B starts. See Section 3's updated Part 7
   entry for the checklist form of this.
+
+- Part 7A enrichment-trigger refinement (2026-08-11, same-day chat-based
+  design review of the decision above, owner-approved): the
+  2026-08-10 decision gated re-enrichment purely on `store_records()`'s
+  status (`new`/`changed`/no row yet). Real gap found by reading
+  `ai_analysis/gemini_narrative.py`'s `_build_prompt()` against
+  `storage/db.py`'s `TRACKED_FIELDS`: the prompt (and `mca_lookup.py`/
+  `news_search.py`) depend on `cin`/`location`/`possession_status`/
+  `land_classification`/`plot_area_mentions`, none of which are
+  `TRACKED_FIELDS` — those only cover `reserve_price`/`auction_date`/
+  `notice_date`/`emd_due_date`. Those enrichment-input fields are
+  populated by `scraper.ibbi.enrich_record_with_details()`/
+  `enrich_record_with_notice()`, gated by `IBBIRecord.details_pdf_parsed`/
+  `notice_pdf_parsed` — and Part 5B's own real-run numbers (0/20
+  `possession_status`, 8/20 `land_classification`, several unparseable
+  notice PDFs that day) confirm these genuinely do resolve from missing
+  to known on a later day for a listing whose tracked fields never
+  change in between. Under the original rule, such a listing would be
+  reported `unchanged` forever after its first enrichment and would keep
+  reusing enrichment generated back when `cin`/`location`/
+  `possession_status` were still null — silently, no record it happened.
+  **Fix, implemented this session:** `enrichment` table gets two more
+  columns, `details_pdf_parsed_at_enrich`/`notice_pdf_parsed_at_enrich`
+  — snapshots of those two flags at the moment a row was last written.
+  `needs_reenrichment()` now also returns `True` when either flag has
+  flipped `False → True` since the stored snapshot, on top of (not
+  instead of) the original `new`/`changed`/no-row-yet rule. Still purely
+  additive — no changes to `listings`/`listing_history`/`collisions`,
+  matching the 2026-08-10 decision's own stated goal. Confirmed on a
+  real offline smoke test this session (`storage/db.py`'s `__main__`,
+  6 assertions including the exact gap scenario: `unchanged` status +
+  `details_pdf_parsed` flipping False→True mid-life). **Scope of what
+  was actually built this session: the storage-layer half of 7A only**
+  (`enrichment` table + `get_enrichment()`/`needs_reenrichment()`/
+  `upsert_enrichment()`) — the orchestrator that will actually call
+  these (scrape→store→score→enrich chaining, its own filename/location)
+  is still not built. Not overstating this as 7A being done.
+- Part 7A orchestrator built (2026-08-11, later same day, new session):
+  built the piece flagged as still missing above. **Filename/location
+  decided (flagged, not guessed, per Section 0 rule 1):** `pipeline.py`
+  at the repo root, alongside the existing `test_part*.py` scripts —
+  not inside `scraper/`/`storage/`/`scoring/`/`ai_analysis/`, since this
+  is the one file that imports and chains all four together and doesn't
+  belong to any single existing package; `run_pipeline()` is the function
+  Part 8B's cron will eventually call directly. Implements exactly the
+  chain the two prior decision-log entries above spec'd: full scrape
+  (`scraper.ibbi.scrape_all_pages`) → Part 3C/5B PDF enrichment
+  (unconditional every run, same as before — NOT gated by
+  `needs_reenrichment()`, since scoring itself depends on the fields
+  those two populate) → `storage.db.store_records()` → fresh in-memory
+  `score_batch_5a`/`5b`/`5c` → per-listing `needs_reenrichment()` →
+  Part 6's three modules re-run only for the subset that needs it (routed
+  through the *existing* `generate_narratives_for_batch()`/
+  `enrich_batch_with_mca()`/`enrich_batch_with_news()` batch helpers, so
+  their already-confirmed pacing/retry logic from Parts 6A/6B/6C is
+  reused rather than reimplemented) → `upsert_enrichment()` for the
+  re-enriched subset, `get_enrichment()` reuse for everything else →
+  one assembled dict per listing (raw scraped fields + that run's fresh
+  score + enrichment, fresh-or-reused, each still carrying its own
+  module's honesty/flags exactly as written) — this assembled list is
+  `run_pipeline()`'s return value and what Part 7B will consume next.
+
+  **Real gap found while wiring this, not previously decided anywhere
+  (flagged here rather than guessed past silently):** a `"collision"`
+  status means the incoming record's `listing_key` hash matches an
+  *existing, different* listing (near-duplicate identity fields — see
+  `storage/db.py`'s own module docstring on the collision path) — the
+  incoming row goes to the `collisions` table, nothing in `listings` is
+  touched. Running that shared `listing_key` through
+  `needs_reenrichment()`/`upsert_enrichment()` would have silently
+  written this incoming, unrelated record's AI narrative into the
+  enrichment row that actually belongs to the *other*, already-stored
+  listing sharing that key — corrupting a real listing's enrichment
+  data. **Fix:** collisions are still assembled into the run's output
+  (visible, scored, flagged) but skip Part 6 entirely this run —
+  `enrichment` is `None` with an explanatory flag, never a guess at
+  whose row to touch. Resolves normally once the collision itself is
+  resolved (gets its own real `listing_key` on a later run).
+
+  **Testing, per this project's "never overstate testing" rule:** an
+  offline wiring smoke test (`pipeline.py`'s own `__main__` block —
+  synthetic records, every network-touching function monkeypatched, same
+  pattern as every other module's `__main__` in this file) ran 4 passes
+  and all passed: (1) two brand-new listings both score + freshly
+  enrich, (2) an identical re-scrape comes back `unchanged` and both
+  reuse enrichment with zero re-spent Gemini/MCA/DuckDuckGo calls, (3) a
+  simulated reserve-price drop on one listing re-enriches only that one,
+  the other still correctly reuses, (4) a forced `"collision"` status
+  (can't force a real hash collision synthetically, same caveat
+  `storage/db.py`'s own test notes) skips enrichment for that listing
+  only, with the explanatory flag present, and leaves the other listing
+  completely unaffected. **This confirms the wiring logic only — it does
+  NOT confirm the real chain** against a live IBBI scrape / real Gemini
+  call / real MCA CSV / real DuckDuckGo query, which is exactly the kind
+  of network-dependent confirmation this sandbox cannot do (Section 0
+  rule 2, no network, ever). `test_part7a.py` was written, matching the
+  exact `test_part6a/b/c.py` convention (real network, small `MAX_PAGES`,
+  runs the pipeline twice against a throwaway DB to prove real
+  same-machine reuse, prints everything Part 7B would consume, asks the
+  owner to paste output back) — **but has NOT been run**, so Part 7A
+  stays unticked in Section 3 until the owner runs it for real and
+  confirms. Small side fix noticed while building this: `data/*.db` was
+  never in `.gitignore` (neither the real DB nor `test_part7a.py`'s
+  throwaway one) — added as a small precaution, same spirit as decision
+  (30)'s own `.gitignore` fix; flagged in Known Open Issues rather than
+  silently assumed harmless.
+
+  **Next session (not this one): run `test_part7a.py` for real** (owner's
+  machine, `GEMINI_API_KEY` set, network) and paste the output back so
+  Part 7A can actually be marked confirmed and Part 7B (PDF layout) can
+  start — 7B has no real per-listing dataset to build against until 7A
+  is confirmed working against the live chain, not just synthetic data.
+- **Part 7A confirmed against the real chain (2026-08-11, later same day,
+  new session):** owner ran `test_part7a.py` for real (own machine,
+  `GEMINI_API_KEY` set, real IBBI scrape) and pasted the full raw console
+  output back (not a summary). Verified line-by-line against this file's
+  own checklist:
+  - Pass 1: `{'new': 20, 'unchanged': 0, 'changed': 0, 'collision': 0}`,
+    all 20 enriched fresh (`enrichment_summary: {'reenriched': 20,
+    'reused': 0, 'skipped_collision': 0}`).
+  - Pass 2, run immediately after against the same live IBBI page:
+    `{'new': 2, 'unchanged': 18, 'changed': 0, 'collision': 0}` —
+    `unchanged` (18) matches `enrichment_summary`'s `reused` (18) exactly,
+    the one number this test exists to prove. The 2 `new` were listings
+    that genuinely appeared on IBBI's live site between the two passes —
+    a real site change, not a bug. Spot-checked individual listings
+    (e.g. V-Accurate Management Services, Euphoria Technologies) carry
+    the identical `listing_key` and identical narrative text across both
+    passes with `enrichment_reused` flipping `False -> True` — confirms
+    real SQLite persistence and reuse, not a coincidence in the summary
+    counts.
+  - Two real, correctly-handled failures present in the raw log (not
+    hidden or silently dropped): RKKR Holdings hit a genuine Gemini
+    `Read timed out` on one lot; NAKODA LIMITED hit a real Gemini `429`
+    quota-exceeded response (full error body visible). Both logged as
+    flags on the listing, did not crash the run.
+  - The known CIN state-code gap (flagged 2026-08-11 earlier this same
+    day) is confirmed real in the live data too: BSR Diagnostic Limited
+    (`CT`) and V-Accurate Management Services (`PN`) both show the
+    "state code isn't in `_CIN_STATE_CODE_TO_NAME`" flag verbatim. Still
+    a small future fix, not a Part 7A blocker.
+  - No tracebacks, no `ENRICHMENT ROW IS NONE` warnings, no silently
+    dropped flags anywhere in the raw output.
+
+  **Part 7A is now fully confirmed — tick it in Section 3.** Part 7B (PDF
+  layout) can start next session: it now has a real, confirmed
+  per-listing assembled dataset (`run_pipeline()`'s return value) to lay
+  out against, from an actual live run rather than synthetic data.
+- **Part 7B built and confirmed (2026-08-11, later same day, new
+  session):** `report/pdf.py` — `categorize_assembled()` (pure data
+  shaping, no reportlab) splits `run_pipeline()`'s assembled list into
+  top-scored / closing-soon / new-today / watchlist-changes, per Section
+  1's own ordering, plus a "flagged for review" collisions section (not
+  in the original list, added per this project's "never silently hide a
+  flagged listing" rule — a collision is still fully scored, just has
+  `enrichment=None` this run per Part 7A's own collision handling, and
+  its card says so rather than showing an empty write-up silently).
+  `new`/`changed` status and field-level diffs are read straight off
+  each assembled entry (which `pipeline.py` already populated from
+  `store_records()`) — no second DB query, matching the roadmap's own
+  spec. `generate_report()` renders via reportlab platypus
+  (`SimpleDocTemplate`) to `config.REPORT_OUTPUT_DIR` by default.
+
+  **No real final score yet (flagged, not glossed over):**
+  `config.SCORE_WEIGHTS` is still all `None`, so `combined_score()` is a
+  plain average of whichever of `partial_score_5a/5b/5c` are available —
+  a reasonable Claude-picked placeholder (same status as
+  `REPORT_TOP_N`/`LOCATION_MATCH_NEUTRAL`/etc — see `config.py`'s new
+  Part 7B comment), NOT the finished weighted ranking. The PDF itself
+  says this under "Top-scored" rather than presenting it as done. Revisit
+  `combined_score()` once the owner sets real weights.
+
+  **Testing — unlike every prior AI-layer part, this one needed no
+  network and no owner-side run**, since PDF layout has no external
+  dependency: `test_part7b.py` built a synthetic assembled dataset
+  covering every category and edge case (a top-scored listing with full
+  enrichment, a closing-soon listing, a new-today listing, a
+  watchlist-changed listing with a real price-drop diff, a collision with
+  enrichment skipped, and a listing with literally nothing populated —
+  no name/price/location/dates/enrichment at all), ran it through
+  `categorize_assembled()` (asserted every listing landed in the right
+  section(s)) and `generate_report()` (asserted a real PDF got written),
+  then read the actual PDF bytes back with `pypdf` and asserted all 17
+  expected substrings appear (every section heading, every
+  `corporate_debtor` name, both sides of the watchlist diff, the
+  collision explanation, the zero-reserve-price handling). All passed —
+  this is a genuine real-render + real-read-back confirmation, not a
+  mocked wiring test, even though it ran inside the sandbox.
+
+  **One real bug found + fixed while visually checking the first render**
+  (rendered a page to PNG via `pdftoppm` and looked at it, rather than
+  trusting the text-extraction assertions alone): reportlab's default
+  base-14 fonts don't include the Indian Rupee sign (₹) glyph — every
+  price rendered as a solid black box instead of raising an exception, so
+  nothing in the automated checks caught it (the pypdf text-extraction
+  check would have silently passed too, since `\u20b9` was genuinely
+  present in the extracted text — the bug was purely visual). Fixed:
+  `_fmt_currency()` now uses `"Rs. "` instead of `"\u20b9"`, universally
+  renderable in the default font without registering a Unicode TTF for
+  one symbol. Re-confirmed via a second render + a second visual PNG
+  check after the fix. Worth remembering for any future part that adds
+  more currency/number formatting: don't trust text-extraction assertions
+  alone for glyph-rendering bugs — spot-check an actual rendered page.
+
+  **Next session: Part 8 (email delivery + GitHub Actions cron)** — 8A
+  needs the owner's SMTP creds (Gmail app password) supplied locally; 8B's
+  full implementation spec (Option B, runtime download from a GitHub
+  Release) was already decided 2026-08-11 (see Part 8B roadmap entry
+  above) and is ready to build once 8A exists.

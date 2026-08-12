@@ -1,1 +1,25 @@
 data/mca_company_master/*.csv
+
+# Flagged 2026-08-11 (Part 7A build): neither the real DB
+# (config.DB_PATH = data/auctions.db) nor test_part7a.py's throwaway
+# test DB were ever covered here -- a pre-existing gap, not something
+# 7A introduced, but a real one now that a script actually creates a
+# .db file under data/. Originally this ignored ALL of data/*.db.
+#
+# CHANGED 2026-08-11 (decision (31), Part 8B): the blanket data/*.db
+# rule is now WRONG for the real DB specifically. GitHub-hosted Actions
+# runners are ephemeral (fresh VM every run, no local disk carried
+# over) -- if data/auctions.db stays gitignored, it can never persist
+# between scheduled runs, and every single cron run would see every
+# listing as brand new, burning a full day's Gemini/MCA/news quota
+# re-enriching things Part 7A's reuse mechanism already knew about.
+# Part 8B's workflow commits data/auctions.db back to the repo after
+# each run specifically so it survives to the next run -- which
+# requires it to be TRACKED, not ignored. Test/throwaway DBs (which
+# never need to survive between runs) stay ignored by name instead of
+# by blanket pattern.
+data/test_*.db
+
+# Generated PDF reports (Part 7B/8A) -- these are emailed, not meant to
+# accumulate in git history. Only auctions.db needs to persist.
+data/reports/*.pdf

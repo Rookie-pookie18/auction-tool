@@ -338,16 +338,65 @@ NEWS_SEARCH_TIER_DELAY_SECONDS = 2   # pause between fallback-query tiers for th
                                       # tried a few different ways)
 
 # ---------------------------------------------------------------------------
-# Report
+# Report (Part 7B — report/pdf.py)
 # ---------------------------------------------------------------------------
 CLOSING_SOON_DAYS = 7   # a listing counts as "closing soon" inside this window
 REPORT_OUTPUT_DIR = "data/reports"
 
+# REPORT_TOP_N: how many listings show in the "Top-scored" section. Claude-
+# picked default (flagged, not owner-specified — same status as
+# LOCATION_MATCH_NEUTRAL/BONUS etc.), fine to tune later.
+REPORT_TOP_N = 15
+
+# combined_score() (report/pdf.py) averages whichever of
+# partial_score_5a/5b/5c are available, since config.SCORE_WEIGHTS above is
+# still all None (owner hasn't set real weights across the five criteria
+# yet — see Part 5's own comments). This is an explicitly-labeled
+# placeholder ranking, NOT the final weighted score Part 7's architecture
+# decision describes — report/pdf.py surfaces this in the PDF itself
+# (a note under "Top-scored") rather than presenting it as finished.
+# Nothing to configure here yet; documented alongside REPORT_TOP_N so it's
+# easy to find when SCORE_WEIGHTS is finally filled in.
+
 # ---------------------------------------------------------------------------
-# Email delivery — placeholders, filled in at Part 7. Free (e.g. Gmail SMTP
-# with an app password) — no paid email API.
-# ---------------------------------------------------------------------------
-EMAIL_FROM = None      # TBD
-EMAIL_TO = None        # TBD
-SMTP_HOST = None       # TBD
-SMTP_PORT = 587
+# Part 8A: email delivery (email_delivery/smtp_send.py). Free (Section 2's
+# "free SMTP (Gmail app password)" call) — no paid email API.
+#
+# SMTP_HOST defaults to Gmail's own submission host now that Gmail is the
+# confirmed provider (Section 2) — same "reasonable default, not an owner
+# decision requiring sign-off" status as SMTP_PORT below, easy to point
+# elsewhere later if the owner ever switches providers. EMAIL_FROM/EMAIL_TO
+# stay TBD (None) — filled in locally by the owner, never committed with a
+# real value (same spirit as GEMINI_API_KEY above, even though these two
+# aren't secrets themselves — they're still personal info, not code).
+#
+# SMTP_PASSWORD is the Gmail APP PASSWORD (not the owner's normal Gmail
+# login password — Gmail requires 2-Step Verification on first, then a
+# 16-character App Password generated at
+# https://myaccount.google.com/apppasswords). Read from the environment /
+# local .env file only, exact same pattern as GEMINI_API_KEY above
+# (python-dotenv already loaded at the top of this file — no second
+# load_dotenv() call needed here). .gitignore already excludes .env, so
+# no new .gitignore entry is needed for this part.
+#
+# email_delivery/smtp_send.py's _require_email_config() checks
+# EMAIL_FROM/EMAIL_TO/SMTP_HOST/SMTP_PASSWORD up front and raises a clear
+# error naming exactly which one is missing, rather than letting smtplib
+# fail confusingly partway through connect/login/send.
+#
+# CHANGED 2026-08-11 (decision (31), Part 8B): EMAIL_FROM/EMAIL_TO now read
+# an env var first, same pattern as SMTP_PASSWORD/GEMINI_API_KEY, instead of
+# being hardcoded-locally-only. Reason: config.py is a TRACKED file -- it's
+# the same file GitHub Actions checks out, so "the owner edits this file
+# locally" (the original plan) has no way to reach a hosted runner at all.
+# Env vars do, via repo secrets/variables (see .github/workflows/
+# daily_report.yml). Local use is unchanged: still no code/committed-value
+# difference required -- set EMAIL_FROM/EMAIL_TO in the same local .env
+# used for GEMINI_API_KEY/SMTP_APP_PASSWORD, or export them in the shell.
+EMAIL_FROM = os.environ.get("EMAIL_FROM")   # owner's Gmail address (the one the App Password belongs to)
+EMAIL_TO = os.environ.get("EMAIL_TO")       # where the report should land; can equal EMAIL_FROM
+SMTP_HOST = "smtp.gmail.com"
+SMTP_PORT = 587         # STARTTLS submission port, not implicit-TLS 465
+SMTP_PASSWORD = os.environ.get("SMTP_APP_PASSWORD")   # never hardcoded
+SMTP_TIMEOUT_SECONDS = 20
+EMAIL_SUBJECT_PREFIX = "[Auction Report]"   # Claude-picked default, fine to tune later

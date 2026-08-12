@@ -110,6 +110,46 @@ CREATE TABLE IF NOT EXISTS collisions (
     resolved         INTEGER DEFAULT 0,
     resolution_note  TEXT
 );
+
+-- ---------------------------------------------------------------------
+-- Part 7A: enrichment persistence (Part 7 architecture decisions,
+-- 2026-08-10 decision log entry, refined 2026-08-11 same-session chat
+-- review -- see that entry and the "2026-08-11 enrichment-trigger
+-- refinement" note below _record_to_dict() for the full reasoning).
+-- Purely additive: no columns added to listings/listing_history/
+-- collisions above. Holds each ai_analysis/ module's latest result per
+-- listing_key, reused for `unchanged` listings instead of re-spending
+-- Gemini/MCA/DuckDuckGo quota -- see needs_reenrichment() for exactly
+-- when a listing is considered stale enough to re-run.
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS enrichment (
+    listing_key                  TEXT PRIMARY KEY,
+
+    gemini_narrative_json        TEXT,   -- JSON: {"narrative": {...}, "flags": [...]}
+    gemini_generated_at          TEXT,
+
+    mca_data_json                TEXT,   -- JSON: {"mca_data": {...}|null, "flags": [...]}
+    mca_lookup_attempted         INTEGER DEFAULT 0,
+    mca_looked_up_at             TEXT,
+
+    news_data_json                TEXT,  -- JSON: news_data (list|null)
+    news_flags_json                TEXT, -- JSON: flags list from search_news_for_debtor()
+    news_searched_at              TEXT,
+
+    -- Snapshots of scraper.ibbi.IBBIRecord's details_pdf_parsed /
+    -- notice_pdf_parsed AT THE MOMENT this row was last (re)computed.
+    -- Neither field is a TRACKED_FIELD (see IDENTITY_FIELDS/TRACKED_FIELDS
+    -- above), so store_records() alone can't detect "this listing's PDF
+    -- parse just succeeded for the first time" -- these two columns let
+    -- needs_reenrichment() detect that directly, without adding
+    -- possession_status/land_classification/notice_pdf_parsed as columns
+    -- on the listings table itself (which would break this table's own
+    -- "purely additive" design goal).
+    details_pdf_parsed_at_enrich INTEGER DEFAULT 0,
+    notice_pdf_parsed_at_enrich  INTEGER DEFAULT 0,
+
+    FOREIGN KEY (listing_key) REFERENCES listings(listing_key)
+);
 """
 
 
@@ -313,6 +353,173 @@ def store_records(conn: sqlite3.Connection, records: list) -> dict:
     return {"summary": summary, "results": results}
 
 
+# ---------------------------------------------------------------------------
+# Part 7A: enrichment persistence
+#
+# 2026-08-11 ENRICHMENT-TRIGGER REFINEMENT (chat-session design review,
+# same day as the 2026-08-10 "Part 7 architecture decisions" entry these
+# functions implement): the original decision gated re-enrichment purely
+# on store_records()'s status ("new"/"changed"/no row yet). But
+# TRACKED_FIELDS above is only [reserve_price, auction_date, notice_date,
+# emd_due_date] -- it does NOT cover cin/location/possession_status/
+# land_classification/plot_area_mentions, all of which
+# ai_analysis/gemini_narrative.py's _build_prompt() (and mca_lookup.py /
+# news_search.py) actually depend on. Those fields are populated by
+# scraper.ibbi.enrich_record_with_details() / enrich_record_with_notice()
+# and gated by IBBIRecord.details_pdf_parsed / notice_pdf_parsed -- and
+# Part 5B's own real-run numbers (0/20 possession_status, 8/20
+# land_classification, several unparseable notice PDFs that day) confirm
+# these genuinely do resolve from missing to known on a LATER day for a
+# listing whose reserve_price/dates never change in between. Under the
+# status-only rule, that listing would be reported "unchanged" forever
+# after its first enrichment and would keep reusing enrichment generated
+# back when cin/location/possession_status were still null -- silently,
+# with no record that it happened. Fixed by also tracking a snapshot of
+# both parse-completion flags on the enrichment row itself (see SCHEMA
+# above) and treating a False->True flip in either as a trigger, on top
+# of (not instead of) the original new/changed/no-row-yet rule.
+# ---------------------------------------------------------------------------
+
+def get_enrichment(conn: sqlite3.Connection, listing_key: str) -> Optional[dict]:
+    """Fetch the current enrichment row for one listing_key, or None if this
+    listing has never been enriched. Returns a plain dict (sqlite3.Row ->
+    dict), JSON columns left as raw text -- callers that need the parsed
+    narrative/mca_data/news_data should json.loads() the relevant field
+    themselves rather than this function guessing what shape they want."""
+    cur = conn.execute("SELECT * FROM enrichment WHERE listing_key = ?", (listing_key,))
+    row = cur.fetchone()
+    return dict(row) if row is not None else None
+
+
+def needs_reenrichment(
+    conn: sqlite3.Connection,
+    listing_key: str,
+    status: str,
+    details_pdf_parsed: bool,
+    notice_pdf_parsed: bool,
+) -> bool:
+    """
+    Decides whether a listing should go through Part 6's three enrichment
+    modules again this run, or reuse its existing `enrichment` row.
+
+    `status` is whatever store_records()/upsert_listing() returned for
+    this listing this run ("new"/"unchanged"/"changed"/"collision").
+    `details_pdf_parsed`/`notice_pdf_parsed` are THIS run's freshly
+    scraped IBBIRecord's own flags (not read back from the DB -- Part 7A's
+    orchestrator scrapes the full batch fresh every run per the Part 7
+    architecture decision, so these are already in memory).
+
+    Returns True (re-enrich) when ANY of:
+      - status is "new" or "changed" (original 2026-08-10 rule)
+      - no enrichment row exists yet for this listing_key (first-ever
+        enrichment, regardless of status)
+      - the stored row's details_pdf_parsed_at_enrich was False and this
+        run's details_pdf_parsed is True (2026-08-11 refinement)
+      - the stored row's notice_pdf_parsed_at_enrich was False and this
+        run's notice_pdf_parsed is True (2026-08-11 refinement)
+
+    A "collision" status is treated the same as "new"/"changed" here
+    (re-enrich) -- the collisions table flags it for manual review
+    separately; there's no reason to also serve stale enrichment for it.
+    """
+    if status in ("new", "changed", "collision"):
+        return True
+
+    existing = get_enrichment(conn, listing_key)
+    if existing is None:
+        return True
+
+    if details_pdf_parsed and not existing["details_pdf_parsed_at_enrich"]:
+        return True
+    if notice_pdf_parsed and not existing["notice_pdf_parsed_at_enrich"]:
+        return True
+
+    return False
+
+
+def upsert_enrichment(
+    conn: sqlite3.Connection,
+    listing_key: str,
+    gemini_result: Optional[dict] = None,
+    mca_result: Optional[dict] = None,
+    news_result: Optional[dict] = None,
+    details_pdf_parsed: bool = False,
+    notice_pdf_parsed: bool = False,
+) -> dict:
+    """
+    Write (insert or replace) this listing's enrichment row after a fresh
+    enrichment pass. Each of gemini_result/mca_result/news_result is the
+    dict shape its own module returns (generate_narrative()'s
+    {"narrative":..., "flags":...}, lookup_company_by_cin()'s
+    {"mca_data":..., "flags":...}, search_news_for_debtor()'s
+    {"news_data":..., "flags":...}) -- pass None for any module that
+    wasn't run this pass (e.g. NEWS_SEARCH_ENABLED=False) to leave that
+    module's columns untouched rather than clobbering a prior real result
+    with a null. `details_pdf_parsed`/`notice_pdf_parsed` should be THIS
+    run's IBBIRecord flags -- they become the new snapshot
+    needs_reenrichment() compares against next time.
+
+    Never raises. Returns the row that was written (see get_enrichment()).
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    existing = get_enrichment(conn, listing_key)
+
+    # Preserve a module's prior stored result if this pass didn't run it,
+    # rather than overwriting a real value with NULL.
+    gemini_json = (
+        json.dumps(gemini_result, default=str) if gemini_result is not None
+        else (existing["gemini_narrative_json"] if existing else None)
+    )
+    gemini_at = now if gemini_result is not None else (existing["gemini_generated_at"] if existing else None)
+
+    mca_json = (
+        json.dumps(mca_result, default=str) if mca_result is not None
+        else (existing["mca_data_json"] if existing else None)
+    )
+    mca_attempted = int(mca_result is not None or bool(existing and existing["mca_lookup_attempted"]))
+    mca_at = now if mca_result is not None else (existing["mca_looked_up_at"] if existing else None)
+
+    news_data_json = (
+        json.dumps((news_result or {}).get("news_data"), default=str) if news_result is not None
+        else (existing["news_data_json"] if existing else None)
+    )
+    news_flags_json = (
+        json.dumps((news_result or {}).get("flags"), default=str) if news_result is not None
+        else (existing["news_flags_json"] if existing else None)
+    )
+    news_at = now if news_result is not None else (existing["news_searched_at"] if existing else None)
+
+    conn.execute(
+        """
+        INSERT INTO enrichment (
+            listing_key, gemini_narrative_json, gemini_generated_at,
+            mca_data_json, mca_lookup_attempted, mca_looked_up_at,
+            news_data_json, news_flags_json, news_searched_at,
+            details_pdf_parsed_at_enrich, notice_pdf_parsed_at_enrich
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(listing_key) DO UPDATE SET
+            gemini_narrative_json = excluded.gemini_narrative_json,
+            gemini_generated_at = excluded.gemini_generated_at,
+            mca_data_json = excluded.mca_data_json,
+            mca_lookup_attempted = excluded.mca_lookup_attempted,
+            mca_looked_up_at = excluded.mca_looked_up_at,
+            news_data_json = excluded.news_data_json,
+            news_flags_json = excluded.news_flags_json,
+            news_searched_at = excluded.news_searched_at,
+            details_pdf_parsed_at_enrich = excluded.details_pdf_parsed_at_enrich,
+            notice_pdf_parsed_at_enrich = excluded.notice_pdf_parsed_at_enrich
+        """,
+        (
+            listing_key, gemini_json, gemini_at,
+            mca_json, mca_attempted, mca_at,
+            news_data_json, news_flags_json, news_at,
+            int(bool(details_pdf_parsed)), int(bool(notice_pdf_parsed)),
+        ),
+    )
+    conn.commit()
+    return get_enrichment(conn, listing_key)
+
+
 if __name__ == "__main__":
     # Offline smoke test: synthetic records only, no network. Confirms the
     # identity/tracked split and collision path all behave before this
@@ -361,9 +568,100 @@ if __name__ == "__main__":
         summary = store_records(conn, [dict(r1_pricedrop), dict(r2)])["summary"]
         print("Batch re-run summary:", summary)
 
+        print("\nAll Part 4 offline smoke-test assertions passed. Collision "
+              "path is logic-only here (needs two records whose "
+              "IDENTITY_FIELDS hash the same but aren't textually equal to "
+              "trigger for real — not exercised in this synthetic test "
+              "since SHA-256 collisions aren't something we can force in a "
+              "demo).")
+
+        # -------------------------------------------------------------
+        # Part 7A offline smoke test: enrichment persistence +
+        # needs_reenrichment(), including the 2026-08-11 refinement.
+        # Synthetic only, no network/Gemini/MCA/DuckDuckGo calls -- same
+        # "offline smoke test only, still needs a real run to be marked
+        # confirmed" caveat as every other __main__ block in this project.
+        # -------------------------------------------------------------
+        print("\n--- Part 7A: enrichment persistence ---\n")
+
+        key = res1["listing_key"]  # r1 from the Part 4 test above, still "new"
+
+        # A brand-new listing has no enrichment row yet -> always re-enrich,
+        # regardless of status.
+        assert needs_reenrichment(conn, key, status="new",
+                                   details_pdf_parsed=False, notice_pdf_parsed=False) is True
+        print("1. New listing, no enrichment row yet -> needs_reenrichment=True (correct).")
+
+        # Simulate a first enrichment pass. At this point cin/location/
+        # possession_status weren't resolved yet (details/notice PDF not
+        # parsed on day 1) -- same shape a real first pass would have.
+        upsert_enrichment(
+            conn, key,
+            gemini_result={"narrative": {"summary": "s", "price_read": "p",
+                                          "risk_notes": [], "data_gaps": []}, "flags": []},
+            mca_result={"mca_data": None, "flags": ["MCA lookup skipped: no CIN available for this listing"]},
+            news_result={"news_data": None, "flags": ["no results"]},
+            details_pdf_parsed=False,
+            notice_pdf_parsed=False,
+        )
+
+        # Day 2: reserve_price/dates unchanged (status="unchanged"), and the
+        # PDF parses still haven't succeeded either -> reuse, no re-enrich.
+        assert needs_reenrichment(conn, key, status="unchanged",
+                                   details_pdf_parsed=False, notice_pdf_parsed=False) is False
+        print("2. Unchanged listing, parse flags still False -> needs_reenrichment=False (reuse) (correct).")
+
+        # Day 3: THE GAP THIS REFINEMENT FIXES. reserve_price/dates still
+        # unchanged (status="unchanged" from store_records()'s point of
+        # view -- TRACKED_FIELDS never saw a diff), but the details PDF
+        # parse succeeded for the first time this run (cin/location/
+        # emd_amount now real instead of null). Without the 2026-08-11
+        # refinement this would silently keep reusing day-1's enrichment,
+        # which was generated with cin=None. With it, this must re-enrich.
+        assert needs_reenrichment(conn, key, status="unchanged",
+                                   details_pdf_parsed=True, notice_pdf_parsed=False) is True
+        print("3. Unchanged listing, details_pdf_parsed flips False->True -> "
+              "needs_reenrichment=True (the gap this refinement fixes).")
+
+        # Re-enrich for real (simulating what the orchestrator would do
+        # after case 3 above fires) and record the new parse-flag snapshot.
+        upsert_enrichment(
+            conn, key,
+            mca_result={"mca_data": {"company_name": "ABC TEXTILES PVT LTD"}, "flags": []},
+            details_pdf_parsed=True,
+            notice_pdf_parsed=False,
+        )
+        row = get_enrichment(conn, key)
+        assert row["details_pdf_parsed_at_enrich"] == 1
+        assert json.loads(row["mca_data_json"])["mca_data"]["company_name"] == "ABC TEXTILES PVT LTD"
+        # gemini_narrative_json from day 1 must survive untouched -- this
+        # pass only re-ran MCA (gemini_result=None), so upsert_enrichment()
+        # must preserve the prior narrative rather than nulling it out.
+        assert row["gemini_narrative_json"] is not None
+        print("4. Re-enrichment preserves modules not re-run this pass "
+              "(gemini_narrative_json untouched when only mca_result is "
+              "passed) -- confirmed.")
+
+        # Day 4: now that details_pdf_parsed_at_enrich=True is on record,
+        # a further day with unchanged status and unchanged parse flags
+        # goes back to reusing -- the trigger doesn't fire forever, only
+        # on the actual flip.
+        assert needs_reenrichment(conn, key, status="unchanged",
+                                   details_pdf_parsed=True, notice_pdf_parsed=False) is False
+        print("5. Unchanged listing, parse flags now both match the stored "
+              "snapshot -> needs_reenrichment=False again (correct).")
+
+        # A "changed" status (e.g. a real reserve_price drop) always
+        # re-enriches too, independent of parse flags -- unchanged from
+        # the original 2026-08-10 decision.
+        assert needs_reenrichment(conn, key, status="changed",
+                                   details_pdf_parsed=True, notice_pdf_parsed=False) is True
+        print("6. Changed listing (e.g. price drop) -> needs_reenrichment=True (correct).")
+
         conn.close()
-        print("\nAll offline smoke-test assertions passed. Collision path is "
-              "logic-only here (needs two records whose IDENTITY_FIELDS hash "
-              "the same but aren't textually equal to trigger for real — "
-              "not exercised in this synthetic test since SHA-256 collisions "
-              "aren't something we can force in a demo).")
+        print("\nAll Part 7A offline smoke-test assertions passed (synthetic "
+              "data only, no real Gemini/MCA/DuckDuckGo calls made -- still "
+              "needs a real small-batch run through an actual orchestrator, "
+              "which does not exist yet, before Part 7A itself can be marked "
+              "confirmed; this only confirms the enrichment table + "
+              "needs_reenrichment()/upsert_enrichment() logic in isolation).")

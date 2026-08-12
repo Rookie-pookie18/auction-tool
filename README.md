@@ -78,6 +78,36 @@ See `config.py`'s Part 6C comment and `test_part6c.py` for the full
 reasoning — confirmed on a real run (5/5 on-topic hits across the
 4-tier chain, quality-checked via cross-matching CINs across sources).
 
+## Email delivery (Part 8A) — free Gmail SMTP app password
+1. Turn on 2-Step Verification on the Gmail account you want to send from.
+2. Generate an App Password: https://myaccount.google.com/apppasswords
+3. Locally: add `SMTP_APP_PASSWORD=...` to `.env` (same file as
+   `GEMINI_API_KEY`), and set `EMAIL_FROM`/`EMAIL_TO` the same way
+   (`EMAIL_FROM=you@gmail.com`, `EMAIL_TO=you@gmail.com` — can be the
+   same address or a different inbox you actually read every morning).
+
+## Daily automated run (Part 8B) — GitHub Actions cron
+`.github/workflows/daily_report.yml` runs `main.py` on a schedule
+(`ubuntu-latest`, no owner machine needs to be on). One-time setup:
+1. In the repo's GitHub Settings → Secrets and variables → Actions, add:
+   `GEMINI_API_KEY`, `SMTP_APP_PASSWORD`, `EMAIL_FROM`, `EMAIL_TO`.
+2. Confirm the `mca-data-v1` Release (with `mca_company_master.zip`
+   attached) exists on the repo — see `PROJECT_STATUS.md` decision (30)
+   if it needs (re)creating.
+3. Trigger a manual run once from the Actions tab (`workflow_dispatch`)
+   before trusting the schedule, and check: the run went green, the
+   email arrived, and `data/auctions.db` shows a new commit from
+   `github-actions[bot]` afterward (that commit is what makes tomorrow's
+   run reuse today's enrichment instead of re-spending quota on
+   everything — see decision (31)).
+4. The schedule defaults to 06:00 IST (`30 0 * * *` UTC in the workflow
+   file) — edit the `cron:` line to change it; GitHub Actions schedules
+   are always in UTC.
+
+`data/auctions.db` is intentionally tracked in git (not gitignored) so it
+survives between runs on GitHub's ephemeral runners — see the `.gitignore`
+comment and decision (31) for why.
+
 ## A note on BAANKNET (Phase 1 source)
 BAANKNET's `robots.txt` disallows automated access, and its Terms &
 Conditions contain broad restrictive language about reusing listed
