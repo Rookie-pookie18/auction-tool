@@ -83,6 +83,7 @@ from __future__ import annotations
 import json
 import sys
 from dataclasses import asdict, is_dataclass
+from datetime import date, timedelta
 from typing import Optional
 
 sys.path.insert(0, ".")
@@ -143,7 +144,16 @@ def run_pipeline(
     try:
 
         # --- 1. Scrape the full current active set ---
-        records, scrape_problems = scrape_all_pages(max_pages=max_pages)
+        # cutoff_date added 2026-08-13, alongside the PDF-fetch gating fix
+        # above -- see config.SCRAPE_WINDOW_DAYS and scraper.ibbi.
+        # scrape_all_pages()'s own docstring for the full reasoning and
+        # the stated tradeoff. None (config default disabled) restores
+        # the old "walk every one of the ~484 pages" behavior.
+        cutoff_date = (
+            date.today() - timedelta(days=config.SCRAPE_WINDOW_DAYS)
+            if config.SCRAPE_WINDOW_DAYS is not None else None
+        )
+        records, scrape_problems = scrape_all_pages(max_pages=max_pages, cutoff_date=cutoff_date)
 
         # --- 2. Scraper-level PDF enrichment (Parts 3C/5B) -- gated as of
         # 2026-08-13 (see module docstring). Read-only preview first (no
@@ -352,7 +362,7 @@ if __name__ == "__main__":
     from datetime import date
     import scraper.ibbi as ibbi_mod  # only used below for the IBBIRecord dataclass
 
-    def fake_scrape_all_pages(max_pages=None):
+    def fake_scrape_all_pages(max_pages=None, cutoff_date=None):
         r1 = ibbi_mod.IBBIRecord(
             notice_type="Sale Notice", corporate_debtor="ABC Textiles Pvt Ltd",
             ip_name="Ramesh Kumar", nature_of_assets="Industrial land 5 acres",
@@ -464,8 +474,8 @@ if __name__ == "__main__":
 
         print("\n--- Pass 3: reserve_price drops on listing 1 -> only that one re-enriches ---")
         real_fake_scrape = scrape_all_pages
-        def scrape_with_price_drop(max_pages=None):
-            recs, problems = real_fake_scrape(max_pages=max_pages)
+        def scrape_with_price_drop(max_pages=None, cutoff_date=None):
+            recs, problems = real_fake_scrape(max_pages=max_pages, cutoff_date=cutoff_date)
             recs[0].reserve_price = 4500000  # price drop on ABC Textiles
             return recs, problems
         scrape_all_pages = scrape_with_price_drop
