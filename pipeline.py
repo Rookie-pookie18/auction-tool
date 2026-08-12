@@ -21,11 +21,22 @@ architecture decisions" and "Part 7A enrichment-trigger refinement"):
      "top-scored" / "closing soon" be computed over every currently-active
      listing, not just today's new/changed ones.
   2. Run Part 3C (enrich_all_with_details) and Part 5B (enrich_all_with_
-     notice) PDF enrichment over the full batch, same as always -- these
-     are NOT gated by needs_reenrichment(); that gate is Part 6's AI layer
-     only (Gemini/MCA/DuckDuckGo quota), never the scraper-level PDF
-     parsing that scoring itself depends on (location/possession_status/
-     land_classification/plot_area_mentions all come from here).
+     notice) PDF enrichment -- but, as of 2026-08-13, ONLY for listings
+     that are new, changed, or were never successfully parsed before
+     (storage.db.classify_pending decides this, read-only, before any
+     fetch happens). Originally this ran unconditionally on every single
+     record every run; against the real site's ~484 pages / ~9,700
+     listings that was 16+ hours of pure fetch-delay, confirmed the hard
+     way when a real run hit GitHub Actions' 4-hour job cap without
+     finishing (see .github/workflows/daily_report.yml history). For
+     listings that DON'T get re-fetched this run, their already-parsed
+     fields (cin/location/emd_amount/auction_platform/plot_area_mentions/
+     possession_status/land_classification) are pulled back from the DB
+     instead, so scoring below still has them for the full active set --
+     not just today's fetches. Same "reuse unless something's actually
+     different" philosophy Part 6's needs_reenrichment() already used for
+     Gemini/MCA/DuckDuckGo, just applied one layer earlier, to the
+     scraper-level PDF fetches that were the actual runtime problem.
   3. storage.db.store_records() -- new/changed/unchanged/collision
      detection, unchanged from Part 4.
   4. Score the full batch fresh in-memory: scoring.rules.score_batch_5a/
@@ -69,6 +80,7 @@ enrich normally on a later run once it has its own real listing_key.
 
 from __future__ import annotations
 
+import json
 import sys
 from dataclasses import asdict, is_dataclass
 from typing import Optional
@@ -77,7 +89,10 @@ sys.path.insert(0, ".")
 
 import config
 from scraper.ibbi import scrape_all_pages, enrich_all_with_details, enrich_all_with_notice
-from storage.db import get_connection, store_records, needs_reenrichment, get_enrichment, upsert_enrichment
+from storage.db import (
+    get_connection, store_records, needs_reenrichment, get_enrichment,
+    upsert_enrichment, classify_pending,
+)
 from scoring.rules import score_batch_5a, score_batch_5b, score_batch_5c
 from ai_analysis.gemini_narrative import generate_narratives_for_batch
 from ai_analysis.mca_lookup import enrich_batch_with_mca
@@ -130,13 +145,69 @@ def run_pipeline(
         # --- 1. Scrape the full current active set ---
         records, scrape_problems = scrape_all_pages(max_pages=max_pages)
 
-        # --- 2. Scraper-level PDF enrichment (Parts 3C/5B) -- unconditional,
-        # every run, same as before this part existed. Not gated by
-        # needs_reenrichment(); that gate applies to Part 6's AI layer only. ---
+        # --- 2. Scraper-level PDF enrichment (Parts 3C/5B) -- gated as of
+        # 2026-08-13 (see module docstring). Read-only preview first (no
+        # writes yet -- the real write happens in step 3, after enrichment,
+        # once cin/location/etc. are final for this run) decides, per
+        # listing, whether a PDF fetch is actually worth doing: only if the
+        # listing is new, changed, or was never successfully parsed before.
+        # Everyone else reuses their already-stored fields untouched.
+        preview_by_index: dict[int, dict] = {}
+        need_details_idx: list[int] = []
+        need_notice_idx: list[int] = []
+        for i, rec in enumerate(records):
+            preview = classify_pending(conn, rec)
+            preview_by_index[i] = preview
+            status = preview["status"]
+            existing = preview["existing"]
+            details_already_parsed = bool(existing and existing.get("details_pdf_parsed"))
+            notice_already_parsed = bool(existing and existing.get("notice_pdf_parsed"))
+            # "new"/"changed"/"collision" always (re-)fetch -- something is
+            # different about this listing, its PDFs might be too. An
+            # "unchanged" listing only (re-)fetches if it was never
+            # successfully parsed before (worth retrying, e.g. yesterday's
+            # PDF was temporarily unreachable or scanned/unreadable).
+            if status in ("new", "changed", "collision") or not details_already_parsed:
+                need_details_idx.append(i)
+            if status in ("new", "changed", "collision") or not notice_already_parsed:
+                need_notice_idx.append(i)
+
         if run_details_enrichment:
-            enrich_all_with_details(records)
+            enrich_all_with_details([records[i] for i in need_details_idx])
         if run_notice_enrichment:
-            enrich_all_with_notice(records)
+            enrich_all_with_notice([records[i] for i in need_notice_idx])
+
+        # For every listing that did NOT get a fresh fetch above, pull its
+        # already-parsed fields back from the DB. Scoring below (step 4)
+        # runs over the FULL currently-active set, not just today's
+        # fetches, so it needs these fields populated on every record,
+        # fetched-this-run or not.
+        need_details_set = set(need_details_idx)
+        need_notice_set = set(need_notice_idx)
+        for i, rec in enumerate(records):
+            existing = preview_by_index[i]["existing"]
+            if existing is None:
+                continue  # brand new listing -- nothing to reuse, always in both fetch sets above
+            if i not in need_details_set:
+                rec.cin = existing.get("cin")
+                rec.emd_amount = existing.get("emd_amount")
+                rec.location = existing.get("location")
+                rec.auction_platform = existing.get("auction_platform")
+                rec.auction_platform_url = existing.get("auction_platform_url")
+                rec.plot_area_mentions = json.loads(existing.get("plot_area_mentions") or "[]")
+                rec.details_pdf_parsed = bool(existing.get("details_pdf_parsed"))
+                rec.flags.append(
+                    "Part 3C (details PDF) reused from the DB, not re-fetched "
+                    "this run -- listing unchanged and already parsed."
+                )
+            if i not in need_notice_set:
+                rec.possession_status = existing.get("possession_status")
+                rec.land_classification = existing.get("land_classification")
+                rec.notice_pdf_parsed = bool(existing.get("notice_pdf_parsed"))
+                rec.flags.append(
+                    "Part 5B (notice PDF) reused from the DB, not re-fetched "
+                    "this run -- listing unchanged and already parsed."
+                )
 
         # --- 3. Store: new/changed/unchanged/collision detection ---
         store_result = store_records(conn, records)
@@ -246,6 +317,16 @@ def run_pipeline(
                 "reenriched": len(reenrich_idx),
                 "reused": len(reused_idx),
                 "skipped_collision": len(collision_idx),
+            },
+            # Added 2026-08-13 alongside the PDF-fetch gating fix -- makes
+            # the actual runtime savings visible in the run's own output
+            # (main.py prints this), rather than only inferable from how
+            # long the job took.
+            "pdf_fetch_summary": {
+                "details_fetched": len(need_details_idx),
+                "details_reused": len(records) - len(need_details_idx),
+                "notice_fetched": len(need_notice_idx),
+                "notice_reused": len(records) - len(need_notice_idx),
             },
         }
     finally:
