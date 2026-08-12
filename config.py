@@ -17,6 +17,26 @@ REQUEST_TIMEOUT_SECONDS = 20
 IBBI_BASE_URL = "https://ibbi.gov.in"
 IBBI_LISTING_PATH = "/liquidation-auction-notices/lists"  # ?page=N for page>=2
 
+# Added 2026-08-13: the live site has ~9,677 total listings across ~484
+# pages going back to Oct 2021, and scrape_all_pages() was walking ALL of
+# them every single run -- most of which are years-old and long since
+# auctioned. Confirmed by a real fetch (owner's request, 2026-08-13) that
+# with NO sort/page params at all, page 1 already comes back newest-first
+# (most recent notice_date at the top) -- so scrape_all_pages() can stop
+# paginating once it's gone back this many days, instead of walking to
+# page 484 every time. None = old behavior (walk everything).
+#
+# Tradeoff, stated plainly rather than silently assumed: this filters by
+# notice_date (when the auction was first published), not auction_date or
+# emd_due_date. Samples checked show auction_date typically ~2-4 weeks
+# after notice_date, so a 120-day window comfortably covers essentially
+# every listing whose auction hasn't happened yet -- but a listing
+# rescheduled long after its original notice_date, with no other tracked
+# field changing until now, could in principle fall outside this window
+# and be missed. Raise this number if that's a real concern for your use
+# case; None restores the old "scrape literally everything" behavior.
+SCRAPE_WINDOW_DAYS = 10
+
 # ---------------------------------------------------------------------------
 # BAANKNET (Phase 2 source — was Phase 1 before the 2026-08-09 re-baseline)
 # ---------------------------------------------------------------------------
