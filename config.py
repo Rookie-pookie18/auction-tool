@@ -35,7 +35,7 @@ IBBI_LISTING_PATH = "/liquidation-auction-notices/lists"  # ?page=N for page>=2
 # field changing until now, could in principle fall outside this window
 # and be missed. Raise this number if that's a real concern for your use
 # case; None restores the old "scrape literally everything" behavior.
-SCRAPE_WINDOW_DAYS = 60
+SCRAPE_WINDOW_DAYS = 90
 
 # ---------------------------------------------------------------------------
 # BAANKNET (Phase 2 source — was Phase 1 before the 2026-08-09 re-baseline)
