@@ -94,6 +94,37 @@ PREFERRED_REGIONS = ["Delhi", "Rajpura", "Madhya Pradesh"]
 # other regions too, just with Delhi/Rajpura/MP naturally floating higher.
 
 # ---------------------------------------------------------------------------
+# Report location filter -- owner request 2026-08-14. UNLIKE PREFERRED_
+# REGIONS above (a scoring bonus that never hides anything), this is a real
+# include-only gate: a listing whose `location` text doesn't match any
+# keyword below is left OUT of the PDF/email report entirely. Applied only
+# at report time (main.py, after run_pipeline() returns) -- deliberately
+# NOT inside pipeline.py/storage/scoring, so the database still keeps every
+# listing regardless of location; only what goes into the report is
+# restricted. Never silent about it: main.py prints the excluded counts and
+# the PDF header states how many listings were excluded and why (see
+# pipeline.filter_assembled_by_location / report/pdf.py build_story).
+LOCATION_FILTER_ENABLED = True
+
+# Region label -> list of keywords, matched case-insensitively as a
+# substring of a listing's raw `location` text (free text scraped from the
+# details PDF, e.g. "Village X, Tehsil Y, District Z, Gujarat").
+#
+# "Delhi NCR" keyword list is a reasonable default (Delhi itself + the
+# core satellite cities most people mean by "NCR") -- NOT the NCR Planning
+# Board's full official district list, which also reaches into many
+# further Haryana/UP/Rajasthan districts. Revisit this list if you meant
+# something broader or narrower.
+INCLUDED_LOCATIONS = {
+    "Delhi NCR": ["delhi", "gurugram", "gurgaon", "noida", "ghaziabad", "faridabad"],
+    "Jharkhand": ["jharkhand"],
+    "Rajpura (Punjab)": ["rajpura"],
+    "Gujarat": ["gujarat"],
+    "Odisha": ["odisha", "orissa"],  # "Orissa" = pre-1996/still-common older spelling
+    "Sikandrabad (UP)": ["sikandrabad", "sikandarabad"],  # both spellings seen in practice
+}
+
+# ---------------------------------------------------------------------------
 # Part 5A scoring internals (price_vs_reserve + location_match only).
 # SCORE_WEIGHTS above stays all-None until 5B/5C are done and the owner
 # picks real weights across all five criteria — these two are NOT a
