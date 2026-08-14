@@ -36,7 +36,7 @@ import os
 from datetime import date
 
 import config
-from pipeline import run_pipeline
+from pipeline import run_pipeline, filter_assembled_by_location
 from report.pdf import generate_report, categorize_assembled
 from email_delivery.smtp_send import send_report_email
 
@@ -73,18 +73,38 @@ print(f"  enrichment_summary: {result['enrichment_summary']}")
 print(f"  scrape_problems: {len(result['scrape_problems'])}")
 print(f"  assembled listings: {len(result['assembled'])}")
 
+# Part 9 (owner request 2026-08-14): report-only location filter. The full
+# assembled set above is what run_pipeline()/storage already saw and kept
+# in the DB, unfiltered -- this only restricts what goes into the PDF/
+# email from here on. See config.py's "Report location filter" section.
+report_assembled = result["assembled"]
+location_filter_result = None
+if config.LOCATION_FILTER_ENABLED:
+    location_filter_result = filter_assembled_by_location(result["assembled"])
+    report_assembled = location_filter_result["kept"]
+    print(
+        f"  location filter: {len(report_assembled)} kept, "
+        f"{len(location_filter_result['excluded_other_location'])} outside target locations, "
+        f"{len(location_filter_result['excluded_unknown_location'])} location not yet known "
+        "(all three groups still counted, none silently dropped)"
+    )
+
 print("\n--- Building the PDF ---")
-pdf_path = generate_report(
-    result["assembled"],
-    run_summary={
-        "store_summary": result["store_summary"],
-        "enrichment_summary": result["enrichment_summary"],
-        "scrape_problems": result["scrape_problems"],
-    },
-)
+run_summary = {
+    "store_summary": result["store_summary"],
+    "enrichment_summary": result["enrichment_summary"],
+    "scrape_problems": result["scrape_problems"],
+}
+if location_filter_result is not None:
+    run_summary["location_filter"] = {
+        "excluded_other_location": len(location_filter_result["excluded_other_location"]),
+        "excluded_unknown_location": len(location_filter_result["excluded_unknown_location"]),
+    }
+
+pdf_path = generate_report(report_assembled, run_summary=run_summary)
 print(f"  PDF written: {pdf_path} ({os.path.getsize(pdf_path)} bytes)")
 
-categorized = categorize_assembled(result["assembled"])
+categorized = categorize_assembled(report_assembled)
 categorized_counts = {
     "top_scored": len(categorized["top_scored"]),
     "closing_soon": len(categorized["closing_soon"]),
@@ -97,11 +117,7 @@ print(f"  categorized_counts: {categorized_counts}")
 print(f"\n--- Sending email to {config.EMAIL_TO} ---")
 send_report_email(
     pdf_path=pdf_path,
-    run_summary={
-        "store_summary": result["store_summary"],
-        "enrichment_summary": result["enrichment_summary"],
-        "scrape_problems": result["scrape_problems"],
-    },
+    run_summary=run_summary,
     categorized_counts=categorized_counts,
 )
 print("EMAIL SENT.")
