@@ -352,6 +352,23 @@ Phase 3+, one at a time, robots.txt/ToS check each before building.
         persistence is actually working.
 
 **Known open issues:**
+- Part 9 (owner request, 2026-08-14): the new `state` field
+  (`scraper/ibbi._derive_state_from_location()`) is a best-effort keyword
+  match against `location`'s free text, not a guarantee — a listing whose
+  location genuinely never mentions a state gets `state=None` plus a
+  flag, and the PDF shows "not stated in source data" rather than leaving
+  the row blank (per the owner's "make state compulsory" request, this is
+  "always shown, honestly" not "always populated" — those are different
+  promises and this only makes the first one true). Also: when a
+  location string mentions more than one recognized state/UT (rare —
+  e.g. a registered-office state alongside the asset's actual state), the
+  first match by scan order wins and it's flagged as ambiguous, not
+  resolved automatically. Not cross-checked yet against `INCLUDED_
+  LOCATIONS` (the Part 9 location filter above) — that filter still
+  matches keywords against raw `location` text, not this new `state`
+  field; switching Jharkhand/Gujarat/Odisha to match on `state` directly
+  would be more precise than substring-matching `location`, worth doing
+  next if the raw-text matching turns out too loose in practice.
 - Part 9 (owner request, 2026-08-14): the "Delhi NCR" keyword list in
   `config.py`'s new `INCLUDED_LOCATIONS` (`delhi, gurugram, gurgaon,
   noida, ghaziabad, faridabad`) is a Claude-picked reasonable default,
@@ -1040,8 +1057,86 @@ anywhere and is still unconfirmed.
 ## 4. Last updated
 *(Overwrite these fields only — see Rule 5 in Section 0.)*
 
-- **Position:** **Part 9 (owner feature requests, post-Phase-1) BUILT,
-  not yet confirmed by the owner (2026-08-14, new session):** two of the
+- **Position:** **Part 9 (owner feature requests, post-Phase-1) — 4 of 5
+  BUILT, none yet confirmed by the owner (2026-08-14, same session
+  continuing):** owner asked to continue straight to items 4 (deeper
+  research / detail links) and 5 (compulsory state) after items 2/3
+  (page numbers, location filter) from earlier this session. Only item 1
+  (exclude car/loan-recovery listings) remains undone — owner hasn't
+  asked for it yet since real "loan recovery" auctions still don't exist
+  in this pipeline (BAANKNET, the source that would have them, remains
+  unbuilt — owner declined to build it earlier this session, see
+  decision log).
+  **Built this round:** (1) `scraper/ibbi.py` — new `state` field on
+  `IBBIRecord`, derived from `location` (never independently scraped —
+  the details PDF has no dedicated State field) by
+  `_derive_state_from_location()`: 28 states + 8 UTs, `\b`-bounded regex
+  per name/variant (word-boundaries matter — a naive substring check
+  would false-positive "Goa" inside "Goalpara", a real Assam district;
+  confirmed this exact case is caught correctly), common alternate
+  spellings included (Orissa→Odisha, Pondicherry→Puducherry,
+  Uttaranchal→Uttarakhand). None + a flag when no state name is found;
+  more-than-one-match is flagged as ambiguous rather than silently
+  resolved. Wired into `enrich_record_with_details()` right after
+  `location` is parsed. (2) `storage/db.py` — new `state TEXT` column:
+  added to `SCHEMA`, `_LISTINGS_COLUMN_MIGRATIONS` (so it `ALTER TABLE`s
+  onto the owner's already-committed `data/auctions.db`, same pattern as
+  the 2026-08-13 possession_status/land_classification migration), and
+  all three `upsert_listing()` write paths (INSERT new / UPDATE unchanged
+  / UPDATE changed). (3) `pipeline.py` — reused-from-DB block now also
+  pulls `rec.state = existing.get("state")` alongside `location`/`cin`/
+  etc. for listings whose details PDF wasn't re-fetched this run. (4)
+  `report/pdf.py` — `_facts_table()` now always shows a "State" row
+  (`raw.get("state") or "not stated in source data"` — never blank, never
+  omitted, per the owner's "make state compulsory" ask: the row's
+  presence is compulsory, the *value* still depends on what the source
+  text actually says). Also: new `_pdf_link()` helper renders real
+  clickable `<link href=...>` hyperlinks (not just printed URL text) for
+  `details_pdf_url`, `notice_pdf_url`, and — new — `auction_platform_url`
+  labeled "Auction platform (bidding, possible photos)" since that's
+  where photos would realistically live if published anywhere (IBBI's
+  own notice/details PDFs are legal/text documents, no photos found in
+  any sample so far — flagged to the owner in chat, not something this
+  session's code can manufacture). URL escaping handles a literal `&` in
+  a query string (e.g. an MSTC platform URL with `?id=1&lot=2`) so it
+  doesn't break Paragraph's XML parser.
+  **Testing (offline only, no network needed):** `test_part7b.py`
+  re-run unchanged, still passes (4-page real PDF, all 17 prior
+  assertions hold) — confirms the new State row/links didn't break
+  existing rendering. Separately confirmed: (a) `_derive_state_from_
+  location()` against 7 synthetic strings incl. the Goa/Goalpara
+  false-positive guard, an ambiguous two-state case, and `None` — all
+  correct. (b) A real, direct SQLite round-trip through all three
+  `upsert_listing()` write paths (insert/unchanged/changed) with `state`
+  populated — no placeholder/column-count mismatch, `state` persisted and
+  read back correctly. (c) `storage/db.py`'s and `pipeline.py`'s own
+  offline synthetic smoke-tests (`python storage/db.py`, `python
+  pipeline.py`) both still pass with no regressions. (d) A synthetic
+  details-PDF fixture (real text from Scotts Garments Ltd, one of the 4
+  original Part 3C fixtures) run through `parse_details_pdf()` AND the
+  full `enrich_record_with_details()` — correctly extracted `location`
+  and derived `state="Karnataka"`. (e) A hand-built two-listing PDF
+  (one with state/links populated, one fully empty) read back with
+  `pypdf`: "State"/"Punjab"/"not stated in source data" all present as
+  expected, AND — checked via `page.get("/Annots")`, not just text
+  extraction — real clickable link annotations with correct `/URI`
+  values present for all three link types, including the `&`-containing
+  platform URL surviving the escape/unescape round-trip intact.
+  **NOT YET CONFIRMED against real IBBI data** — same as the item-2/3
+  batch earlier this session, owner is copy-pasting changed files
+  directly rather than receiving a new zip; a real `main.py` run (local
+  or Actions cron) against live data, on a DB that already has the old
+  schema, is what actually confirms the `state` column migration path
+  for real (only tested against a fresh throwaway DB above, not an
+  ALTER TABLE onto an existing populated one).
+  **Next: owner to copy in the 6 changed files
+  (`scraper/ibbi.py`, `storage/db.py`, `pipeline.py`, `report/pdf.py`,
+  plus item-2/3's already-copied `config.py`/`main.py`), commit, then
+  either confirm on a real run or move to item 1 (car/loan-recovery
+  exclusion) — the one Part 9 item still undone.**
+  **Previous position (2026-08-14, same session, earlier), kept for
+  context — Part 9 (owner feature requests, post-Phase-1) BUILT,
+  not yet confirmed by the owner:** two of the
   owner's five requested changes done this session (page numbers +
   location filter); the other three (exclude car/loan-recovery listings,
   compulsory `state` field, per-listing deep-link/photos research) are
