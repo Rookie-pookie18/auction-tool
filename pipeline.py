@@ -345,6 +345,64 @@ def run_pipeline(
     return result
 
 
+def filter_assembled_by_location(
+    assembled: list[dict],
+    included_locations: Optional[dict] = None,
+) -> dict:
+    """Owner request 2026-08-14 (Part 9): report-only include filter,
+    kept OUT of run_pipeline() above on purpose -- run_pipeline()/storage
+    still see and keep every listing regardless of location; this is a
+    separate, explicit step main.py runs on run_pipeline()'s "assembled"
+    output, after the fact, only for what goes into the PDF/email. See
+    config.py's "Report location filter" section for why and for the
+    keyword lists.
+
+    A listing's raw `location` text is matched case-insensitively as a
+    substring against every keyword across all of included_locations's
+    lists (region labels themselves don't matter for matching -- they're
+    just for the caller's own reporting). Never a silent drop: every
+    listing ends up in exactly one of the three returned lists, never
+    just missing.
+
+    included_locations: None -> config.INCLUDED_LOCATIONS. Pass an
+        explicit dict to override (e.g. in a test).
+
+    Returns:
+      {
+        "kept": [entry, ...],                    -- location matched
+        "excluded_other_location": [entry, ...],  -- location known, no match
+        "excluded_unknown_location": [entry, ...],-- location None/empty
+                                                       (details PDF not
+                                                       parsed yet, or the
+                                                       PDF genuinely never
+                                                       stated one)
+      }
+    """
+    included_locations = config.INCLUDED_LOCATIONS if included_locations is None else included_locations
+    keywords = [kw.lower() for kws in included_locations.values() for kw in kws]
+
+    kept: list[dict] = []
+    excluded_other_location: list[dict] = []
+    excluded_unknown_location: list[dict] = []
+
+    for entry in assembled:
+        location = (entry.get("raw") or {}).get("location")
+        if not location:
+            excluded_unknown_location.append(entry)
+            continue
+        location_lower = location.lower()
+        if any(kw in location_lower for kw in keywords):
+            kept.append(entry)
+        else:
+            excluded_other_location.append(entry)
+
+    return {
+        "kept": kept,
+        "excluded_other_location": excluded_other_location,
+        "excluded_unknown_location": excluded_unknown_location,
+    }
+
+
 if __name__ == "__main__":
     # -----------------------------------------------------------------
     # OFFLINE wiring smoke test only -- synthetic data, no network, same
