@@ -202,6 +202,7 @@ def run_pipeline(
                 rec.cin = existing.get("cin")
                 rec.emd_amount = existing.get("emd_amount")
                 rec.location = existing.get("location")
+                rec.state = existing.get("state")
                 rec.auction_platform = existing.get("auction_platform")
                 rec.auction_platform_url = existing.get("auction_platform_url")
                 rec.plot_area_mentions = json.loads(existing.get("plot_area_mentions") or "[]")
