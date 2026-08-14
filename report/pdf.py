@@ -586,6 +586,18 @@ def build_story(categorized: dict, run_summary: Optional[dict] = None) -> list:
             _STYLE_SECTION_NOTE,
         ))
 
+    # Asset-type filter (Part 9, owner request 2026-08-14, item 1) --
+    # same "state it plainly" pattern as the location filter above.
+    if run_summary and run_summary.get("asset_filter"):
+        af = run_summary["asset_filter"]
+        story.append(Paragraph(
+            f"Asset-type filter active — vehicle/car listings excluded. "
+            f"{af.get('excluded_asset_type', 0)} listing(s) excluded from this "
+            f"report as vehicles/cars (loan-recovery exclusion not applicable "
+            f"yet -- no loan-recovery source is scraped by this pipeline).",
+            _STYLE_SECTION_NOTE,
+        ))
+
     _section(
         story, "Top-scored",
         "Ranked by a placeholder combined score (plain average of whatever 5A/5B/5C "
