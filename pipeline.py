@@ -81,6 +81,7 @@ enrich normally on a later run once it has its own real listing_key.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from dataclasses import asdict, is_dataclass
 from datetime import date, timedelta
@@ -358,12 +359,20 @@ def filter_assembled_by_location(
     config.py's "Report location filter" section for why and for the
     keyword lists.
 
-    A listing's raw `location` text is matched case-insensitively as a
-    substring against every keyword across all of included_locations's
-    lists (region labels themselves don't matter for matching -- they're
-    just for the caller's own reporting). Never a silent drop: every
-    listing ends up in exactly one of the three returned lists, never
-    just missing.
+    Each region in included_locations is either:
+      {"kind": "state", "values": [...]}   -- compared with EXACT,
+          case-insensitive equality against the listing's clean `state`
+          field (only correct for regions that are exactly one whole
+          state -- see config.py's INCLUDED_LOCATIONS docstring).
+      {"kind": "keyword", "values": [...]} -- case-insensitive substring
+          match against the listing's raw `location` text (for anything
+          narrower or broader than one state -- a city, or a multi-state
+          area).
+    A listing is kept if it matches ANY region by its region's own kind
+    (region labels themselves don't matter for matching -- they're just
+    for the caller's own reporting). Never a silent drop: every listing
+    ends up in exactly one of the three returned lists, never just
+    missing.
 
     included_locations: None -> config.INCLUDED_LOCATIONS. Pass an
         explicit dict to override (e.g. in a test).
@@ -380,19 +389,36 @@ def filter_assembled_by_location(
       }
     """
     included_locations = config.INCLUDED_LOCATIONS if included_locations is None else included_locations
-    keywords = [kw.lower() for kws in included_locations.values() for kw in kws]
+    state_values = {
+        v.lower() for spec in included_locations.values()
+        if spec.get("kind") == "state" for v in spec.get("values", [])
+    }
+    keyword_values = [
+        kw.lower() for spec in included_locations.values()
+        if spec.get("kind") == "keyword" for kw in spec.get("values", [])
+    ]
 
     kept: list[dict] = []
     excluded_other_location: list[dict] = []
     excluded_unknown_location: list[dict] = []
 
     for entry in assembled:
-        location = (entry.get("raw") or {}).get("location")
-        if not location:
+        raw = entry.get("raw") or {}
+        location = raw.get("location")
+        state = raw.get("state")
+        if not location and not state:
             excluded_unknown_location.append(entry)
             continue
-        location_lower = location.lower()
-        if any(kw in location_lower for kw in keywords):
+
+        matched = False
+        if state and state.lower() in state_values:
+            matched = True
+        elif location:
+            location_lower = location.lower()
+            if any(kw in location_lower for kw in keyword_values):
+                matched = True
+
+        if matched:
             kept.append(entry)
         else:
             excluded_other_location.append(entry)
@@ -401,6 +427,58 @@ def filter_assembled_by_location(
         "kept": kept,
         "excluded_other_location": excluded_other_location,
         "excluded_unknown_location": excluded_unknown_location,
+    }
+
+
+def filter_assembled_by_asset_type(
+    assembled: list[dict],
+    excluded_keywords: Optional[list[str]] = None,
+) -> dict:
+    """Owner request 2026-08-14 (Part 9, item 1): report-only exclude
+    filter for vehicle/car listings. Same "report-only, kept OUT of
+    run_pipeline()" pattern as filter_assembled_by_location() above --
+    see config.py's "Report asset-type exclusion filter" section for why,
+    for the keyword list, and for why this only covers "cars" and not
+    "loan-recovery" (no source for the latter exists yet).
+
+    A listing's `nature_of_assets` text is matched case-insensitively,
+    `\\b`-bounded, against every keyword in excluded_keywords -- a match
+    anywhere excludes the whole listing (see config.py docstring on why
+    a mixed "land + vehicle" listing is still excluded, not kept for its
+    land).
+
+    excluded_keywords: None -> config.EXCLUDED_ASSET_KEYWORDS. Pass an
+        explicit list to override (e.g. in a test).
+
+    Returns:
+      {
+        "kept": [entry, ...],              -- no excluded keyword found
+        "excluded_asset_type": [entry, ...],-- nature_of_assets matched
+                                                one of excluded_keywords
+      }
+    Listings with no nature_of_assets text at all are kept -- absence of
+    the field is not evidence it's a vehicle listing, same "never
+    penalize missing data" principle used throughout this project.
+    """
+    excluded_keywords = config.EXCLUDED_ASSET_KEYWORDS if excluded_keywords is None else excluded_keywords
+    patterns = [
+        re.compile(r"\b" + re.escape(kw) + r"\b", re.IGNORECASE)
+        for kw in excluded_keywords
+    ]
+
+    kept: list[dict] = []
+    excluded_asset_type: list[dict] = []
+
+    for entry in assembled:
+        text = (entry.get("raw") or {}).get("nature_of_assets")
+        if text and any(p.search(text) for p in patterns):
+            excluded_asset_type.append(entry)
+        else:
+            kept.append(entry)
+
+    return {
+        "kept": kept,
+        "excluded_asset_type": excluded_asset_type,
     }
 
 
