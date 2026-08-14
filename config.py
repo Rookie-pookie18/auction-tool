@@ -106,23 +106,84 @@ PREFERRED_REGIONS = ["Delhi", "Rajpura", "Madhya Pradesh"]
 # pipeline.filter_assembled_by_location / report/pdf.py build_story).
 LOCATION_FILTER_ENABLED = True
 
-# Region label -> list of keywords, matched case-insensitively as a
-# substring of a listing's raw `location` text (free text scraped from the
-# details PDF, e.g. "Village X, Tehsil Y, District Z, Gujarat").
+# Region label -> match spec. Two match kinds, picked per region depending
+# on whether the region IS a whole state or is something more specific
+# than a state (a city, or a multi-state area like "Delhi NCR"):
 #
-# "Delhi NCR" keyword list is a reasonable default (Delhi itself + the
-# core satellite cities most people mean by "NCR") -- NOT the NCR Planning
-# Board's full official district list, which also reaches into many
-# further Haryana/UP/Rajasthan districts. Revisit this list if you meant
-# something broader or narrower.
+#   {"kind": "state", "values": [...]} -- compared against the listing's
+#     clean `state` field (scraper/ibbi.py's _derive_state_from_location(),
+#     one of the 28+8 canonical state/UT names) with EXACT, case-insensitive
+#     equality. Only correct for regions that ARE a full state -- Jharkhand,
+#     Gujarat, Odisha are exactly one state each, so this is strictly
+#     tighter than the old substring-on-raw-`location` approach with no
+#     loss of recall (state itself is *derived* from that same location
+#     text, just already cleaned/canonicalized -- see scraper/ibbi.py).
+#     "Odisha" only needs to list "Odisha" here (not "Orissa" too) because
+#     the state field is already canonicalized to "Odisha" upstream --
+#     _derive_state_from_location() maps the "Orissa" spelling to it before
+#     this filter ever sees it.
+#
+#   {"kind": "keyword", "values": [...]} -- old behaviour: case-insensitive
+#     substring match against the listing's raw `location` text. Still
+#     required for anything narrower or broader than exactly-one-state:
+#     "Rajpura (Punjab)" and "Sikandrabad (UP)" are single cities, not
+#     their whole state (a `state` match would wrongly pull in every other
+#     listing anywhere else in Punjab/UP); "Delhi NCR" spans parts of
+#     multiple states (Delhi itself plus Haryana/UP satellite cities), so
+#     no single `state` value covers it either.
+#
+# Owner request 2026-08-14 (this tightening pass): kept as a live TODO
+# note beforehand, then applied once asked for -- Jharkhand/Gujarat/Odisha
+# moved off substring-guessing now that the clean `state` field exists.
 INCLUDED_LOCATIONS = {
-    "Delhi NCR": ["delhi", "gurugram", "gurgaon", "noida", "ghaziabad", "faridabad"],
-    "Jharkhand": ["jharkhand"],
-    "Rajpura (Punjab)": ["rajpura"],
-    "Gujarat": ["gujarat"],
-    "Odisha": ["odisha", "orissa"],  # "Orissa" = pre-1996/still-common older spelling
-    "Sikandrabad (UP)": ["sikandrabad", "sikandarabad"],  # both spellings seen in practice
+    "Delhi NCR": {
+        "kind": "keyword",
+        "values": ["delhi", "gurugram", "gurgaon", "noida", "ghaziabad", "faridabad"],
+    },
+    "Jharkhand": {"kind": "state", "values": ["Jharkhand"]},
+    "Rajpura (Punjab)": {"kind": "keyword", "values": ["rajpura"]},
+    "Gujarat": {"kind": "state", "values": ["Gujarat"]},
+    "Odisha": {"kind": "state", "values": ["Odisha"]},
+    "Sikandrabad (UP)": {"kind": "keyword", "values": ["sikandrabad", "sikandarabad"]},  # both spellings seen in practice
 }
+
+# ---------------------------------------------------------------------------
+# Report asset-type exclusion filter -- owner request 2026-08-14 (Part 9,
+# item 1). Same report-only pattern as the location filter above: applied
+# in main.py after run_pipeline() returns, NOT inside pipeline.py/storage/
+# scoring, so the database still keeps every listing regardless of asset
+# type -- only what goes into the PDF/email is restricted. Never silent
+# about it: main.py prints the excluded count and the PDF header states
+# how many listings were excluded and why (see
+# pipeline.filter_assembled_by_asset_type / report/pdf.py build_story).
+#
+# Scope, flagged rather than silently narrowed: the owner's ask was
+# "cars/loan-recovery". Only the "cars" half is actually implementable
+# right now -- there IS a scraped field to check it against
+# (`nature_of_assets`, free text from the details PDF/table, e.g. "Parcel
+# of Land; Vehicle"). "Loan-recovery" listings (SARFAESI-style bank
+# recovery auctions, as opposed to this pipeline's IBBI insolvency
+# listings) have no source at all yet -- BAANKNET, the site that would
+# carry them, remains unbuilt (owner declined to build it earlier, see
+# PROJECT_STATUS.md decision log) -- so there is no field to filter on
+# for that half. This filter therefore only excludes vehicle/car listings
+# for now; revisit once/if a loan-recovery source exists.
+ASSET_EXCLUSION_ENABLED = True
+
+# Matched case-insensitively as a `\b`-bounded substring of a listing's
+# `nature_of_assets` text (same word-boundary discipline as
+# scraper/ibbi.py's STATE_PATTERNS, so e.g. "car" doesn't false-positive
+# inside "carpentry equipment" or "carpet"). A listing matches if ANY
+# keyword is found anywhere in the (often multi-asset, semicolon-
+# separated) nature_of_assets text -- e.g. "Parcel of Land; Vehicle"
+# still gets excluded even though it also lists land, since the owner's
+# ask was to keep car listings out entirely, not to keep land-plus-car
+# listings just because land is also mentioned.
+EXCLUDED_ASSET_KEYWORDS = [
+    "car", "cars", "vehicle", "vehicles", "motor vehicle", "two-wheeler",
+    "two wheeler", "four-wheeler", "four wheeler", "truck", "trucks",
+    "scooter", "motorcycle", "motorbike", "auto rickshaw",
+]
 
 # ---------------------------------------------------------------------------
 # Part 5A scoring internals (price_vs_reserve + location_match only).
