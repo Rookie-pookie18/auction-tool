@@ -137,6 +137,13 @@ class IBBIRecord:
     cin: Optional[str] = None
     emd_amount: Optional[int] = None
     location: Optional[str] = None
+    # Part 9 (owner request 2026-08-14): derived FROM `location` right
+    # after it's parsed above -- see _derive_state_from_location() below
+    # -- never independently scraped (IBBI's details PDF has no dedicated
+    # State field, only the free-text "Location of Assets" one). None +
+    # a flag when no recognized state/UT name is found in that text,
+    # same "never silently guess" pattern as land_classification.
+    state: Optional[str] = None
     auction_platform: Optional[str] = None
     auction_platform_url: Optional[str] = None
     # Best-effort regex matches of size figures found in the PDF's Nature
@@ -688,6 +695,105 @@ def parse_details_pdf(text: str) -> tuple[dict, list[str]]:
     return result, flags
 
 
+# All 28 states + 8 union territories (current as of this project's own
+# knowledge cutoff), canonical name -> compiled \b-bounded regex (spaces
+# within a name become \s+ so "Uttar   Pradesh"-style odd whitespace from
+# PDF text extraction still matches). Word-boundaries matter here, not
+# just a nicety -- a plain substring check would false-positive e.g. "Goa"
+# inside "Goalpara" (a real Assam district). A few common older/alternate
+# spellings are included as extra patterns for the same canonical name
+# (Orissa -> Odisha, Pondicherry -> Puducherry, Uttaranchal -> Uttarakhand)
+# since scraped PDF text spans many years and liquidators' own wording.
+# Longer/more specific names are listed first only where a real containment
+# risk exists (none currently do among these 36 names); order otherwise
+# doesn't matter since every name is matched independently against the
+# full text, not sliced.
+_STATE_NAME_VARIANTS = [
+    ("Andhra Pradesh", ["Andhra Pradesh"]),
+    ("Arunachal Pradesh", ["Arunachal Pradesh"]),
+    ("Assam", ["Assam"]),
+    ("Bihar", ["Bihar"]),
+    ("Chhattisgarh", ["Chhattisgarh", "Chattisgarh"]),
+    ("Goa", ["Goa"]),
+    ("Gujarat", ["Gujarat"]),
+    ("Haryana", ["Haryana"]),
+    ("Himachal Pradesh", ["Himachal Pradesh"]),
+    ("Jharkhand", ["Jharkhand"]),
+    ("Karnataka", ["Karnataka"]),
+    ("Kerala", ["Kerala"]),
+    ("Madhya Pradesh", ["Madhya Pradesh"]),
+    ("Maharashtra", ["Maharashtra"]),
+    ("Manipur", ["Manipur"]),
+    ("Meghalaya", ["Meghalaya"]),
+    ("Mizoram", ["Mizoram"]),
+    ("Nagaland", ["Nagaland"]),
+    ("Odisha", ["Odisha", "Orissa"]),
+    ("Punjab", ["Punjab"]),
+    ("Rajasthan", ["Rajasthan"]),
+    ("Sikkim", ["Sikkim"]),
+    ("Tamil Nadu", ["Tamil Nadu"]),
+    ("Telangana", ["Telangana"]),
+    ("Tripura", ["Tripura"]),
+    ("Uttar Pradesh", ["Uttar Pradesh"]),
+    ("Uttarakhand", ["Uttarakhand", "Uttaranchal"]),
+    ("West Bengal", ["West Bengal"]),
+    # Union territories
+    ("Andaman and Nicobar Islands", ["Andaman and Nicobar", "Andaman & Nicobar"]),
+    ("Chandigarh", ["Chandigarh"]),
+    ("Dadra and Nagar Haveli and Daman and Diu", [
+        "Dadra and Nagar Haveli and Daman and Diu", "Dadra & Nagar Haveli",
+        "Daman and Diu", "Daman & Diu",
+    ]),
+    ("Delhi", ["Delhi", "NCT of Delhi", "New Delhi"]),
+    ("Jammu and Kashmir", ["Jammu and Kashmir", "Jammu & Kashmir"]),
+    ("Ladakh", ["Ladakh"]),
+    ("Lakshadweep", ["Lakshadweep"]),
+    ("Puducherry", ["Puducherry", "Pondicherry"]),
+]
+
+STATE_PATTERNS = [
+    (canonical, re.compile(r"\b" + re.sub(r"\s+", r"\\s+", re.escape(variant)) + r"\b", re.IGNORECASE))
+    for canonical, variants in _STATE_NAME_VARIANTS
+    for variant in variants
+]
+
+
+def _derive_state_from_location(location: Optional[str]) -> tuple[Optional[str], list[str]]:
+    """Best-effort keyword search over `location` (free text scraped from
+    the details PDF's own field 16) for a recognized Indian state/UT name.
+    Returns (state, flags) -- same "never silently guess" pattern as
+    _detect_land_classification(): None + a flag when nothing recognized
+    is found (location missing entirely, OR present but genuinely doesn't
+    mention a state -- both real, both worth flagging rather than hiding).
+    If more than one distinct state name appears (rare, but real notices
+    sometimes list a registered-office state alongside the asset's actual
+    state) the first match by scan order is used and it's flagged as
+    ambiguous rather than silently picking one -- a human reading the flag
+    can resolve it from the raw location text right next to it in the
+    report."""
+    if not location or not location.strip():
+        return None, ["state not found: location text is empty/unavailable"]
+
+    matches = []
+    for canonical, pattern in STATE_PATTERNS:
+        if pattern.search(location) and canonical not in matches:
+            matches.append(canonical)
+
+    if not matches:
+        return None, [
+            "state not found: no recognized Indian state/UT name in the "
+            "location text (best-effort keyword search — the source text "
+            "may use an unrecognized abbreviation or spelling)"
+        ]
+    if len(matches) > 1:
+        return matches[0], [
+            f"state ambiguous: location text mentions more than one state/UT "
+            f"({', '.join(matches)}) — used the first match ({matches[0]}), "
+            "check the raw location text for this listing"
+        ]
+    return matches[0], []
+
+
 def enrich_record_with_details(rec: IBBIRecord) -> None:
     """Fetch + parse rec.details_pdf_url and fill in cin/location/
     emd_amount/auction_platform/plot_area_mentions. Mutates rec in place.
@@ -717,12 +823,14 @@ def enrich_record_with_details(rec: IBBIRecord) -> None:
     parsed, flags = parse_details_pdf(text)
     rec.cin = parsed["cin"]
     rec.location = parsed["location"]
+    rec.state, state_flags = _derive_state_from_location(rec.location)
     rec.auction_platform = parsed["auction_platform"]
     rec.auction_platform_url = parsed["auction_platform_url"]
     rec.emd_amount = parsed["emd_amount"]
     rec.plot_area_mentions = parsed["area_mentions"]
     rec.details_pdf_parsed = True
     rec.flags.extend(flags)
+    rec.flags.extend(state_flags)
 
     # Cross-check against the table's own reserve price (from 3A/3B) —
     # two independently-parsed copies of the same number; a mismatch is
