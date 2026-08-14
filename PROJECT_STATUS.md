@@ -352,6 +352,17 @@ Phase 3+, one at a time, robots.txt/ToS check each before building.
         persistence is actually working.
 
 **Known open issues:**
+- Part 9 (owner request, 2026-08-14): the "Delhi NCR" keyword list in
+  `config.py`'s new `INCLUDED_LOCATIONS` (`delhi, gurugram, gurgaon,
+  noida, ghaziabad, faridabad`) is a Claude-picked reasonable default,
+  NOT the NCR Planning Board's full official district list (which also
+  reaches into further Haryana/UP/Rajasthan districts). Owner hasn't
+  confirmed this is the intended scope — revisit if it's cutting out
+  locations that should count as NCR. Also: a listing whose `location`
+  is `None` (details PDF not parsed yet) is excluded from the report as
+  "unknown", not held back for a later run — if the owner would rather
+  see those included-with-a-flag instead of excluded, that's a one-line
+  change in `pipeline.filter_assembled_by_location()`.
 - Part 8A real full run (2026-08-11, owner's Windows machine): PDF
   confirmed correct in production, not just synthetic tests — all four
   sections rendered in the right order including a clean "None today"
@@ -1029,8 +1040,54 @@ anywhere and is still unconfirmed.
 ## 4. Last updated
 *(Overwrite these fields only — see Rule 5 in Section 0.)*
 
-- **Position:** **Part 8B BUILT, not yet confirmed (2026-08-11, new
-  session):** owner opened this session by flagging a real gap in the
+- **Position:** **Part 9 (owner feature requests, post-Phase-1) BUILT,
+  not yet confirmed by the owner (2026-08-14, new session):** two of the
+  owner's five requested changes done this session (page numbers +
+  location filter); the other three (exclude car/loan-recovery listings,
+  compulsory `state` field, per-listing deep-link/photos research) are
+  still pending, owner explicitly asked to do these two first.
+  **Built:** (1) `report/pdf.py` — `_NumberedCanvas` (standard reportlab
+  two-pass technique: `showPage()` stashes each finished page instead of
+  flushing it, `save()` replays every stashed page once the true total
+  page count is known, drawing "Page X of Y" bottom-right on each) wired
+  in via `generate_report()`'s `doc.build(..., canvasmaker=
+  _NumberedCanvas)` — no flowable/layout changes needed elsewhere. (2)
+  New `config.py` section `LOCATION_FILTER_ENABLED` /
+  `INCLUDED_LOCATIONS` (6 owner-specified regions: Delhi NCR, Jharkhand,
+  Rajpura/Punjab, Gujarat, Odisha, Sikandrabad/UP — keyword lists, not
+  exact-match, case-insensitive substring against the scraped `location`
+  free text) plus new `pipeline.filter_assembled_by_location()`, called
+  from `main.py` **after** `run_pipeline()` returns, **before**
+  `generate_report()`/`categorize_assembled()`. Deliberately kept OUT of
+  `run_pipeline()`/storage — the database still keeps every listing
+  regardless of location; only the PDF/email report is restricted. Every
+  excluded listing is counted, not silently dropped: split into
+  `excluded_other_location` (location known, no keyword match) vs.
+  `excluded_unknown_location` (location still `None` — details PDF not
+  parsed yet), both printed by `main.py` and shown in the PDF header via
+  a new `run_summary["location_filter"]` block threaded through
+  `build_story()`.
+  **Testing (offline only, no network needed for either change — same
+  reasoning as Part 7B):** `test_part7b.py` re-run unchanged and still
+  passes (4-page real PDF, all prior assertions hold) — confirms neither
+  change altered `categorize_assembled()`'s existing default behavior.
+  Separately confirmed: (a) `report/pdf.py`'s own `__main__` smoke test
+  still renders a real PDF; read it back with `pypdf` and verified pages
+  literally read "Page 1 of 3" / "Page 2 of 3" / "Page 3 of 3". (b)
+  `filter_assembled_by_location()` run directly against synthetic
+  location strings covering all 6 target regions (incl. the
+  "Sikandarabad" spelling variant) plus one out-of-scope location and one
+  `None` — all landed in the correct one of the three returned buckets.
+  **NOT YET CONFIRMED against real IBBI data or a real GitHub commit** —
+  owner is copy-pasting these 4 changed files (`config.py`, `pipeline.py`,
+  `main.py`, `report/pdf.py`) into their repo directly rather than
+  receiving a new zip this session; next real `main.py` run (local or via
+  the Actions cron) is what actually confirms this against live data.
+  **Next: owner to commit, then either confirm this batch on a real run,
+  or continue straight to the remaining Part 9 items (car/loan-recovery
+  exclusion, compulsory state, deep-link/photos).**
+  **Previous position (2026-08-11, new session), kept for context: Part
+  8B BUILT, not yet confirmed:** owner opened this session by flagging a real gap in the
   existing spec before any 8B code got written: decision (30) fully
   covers getting MCA reference data onto a GitHub-hosted runner, but
   never addressed `data/auctions.db` itself persisting across runs —
