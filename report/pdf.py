@@ -198,6 +198,21 @@ def _fmt_date(value) -> str:
     return str(value)
 
 
+def _pdf_link(label: str, url: str) -> str:
+    """Reportlab mini-XML <link> tag -- a real clickable in-PDF hyperlink,
+    not just printed URL text (Part 9, owner request 2026-08-14: 'add a
+    link for every auction that takes me to full details'). Escapes the
+    visible label the same way _facts_table's cell() does (html.escape),
+    and separately escapes the URL itself: only &/</> matter inside an
+    XML attribute value here (a raw '&' in a query string, e.g.
+    '?id=1&page=2', would otherwise break Paragraph's parser or silently
+    truncate the link) -- a literal '\"' in a URL would need real
+    percent-encoding upstream, not something to paper over here."""
+    safe_url = str(url).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    safe_label = html.escape(str(label))
+    return f'<link href="{safe_url}" color="#1a5fb4"><u>{safe_label}</u></link>'
+
+
 def _as_date(value) -> Optional[date]:
     """Same tolerant parsing as _fmt_date, but returns a real date (or
     None) for comparisons -- used by closing-soon detection and sorting."""
@@ -405,6 +420,7 @@ def _facts_table(raw: dict) -> Table:
     rows = [
         [cell("Reserve price"), cell(_fmt_currency(raw.get("reserve_price")))],
         [cell("Location"), cell(raw.get("location") or "not yet known")],
+        [cell("State"), cell(raw.get("state") or "not stated in source data")],
         [cell("Auction date"), cell(_fmt_date(raw.get("auction_date")))],
         [cell("EMD due date"), cell(_fmt_date(raw.get("emd_due_date")))],
         [cell("IP / liquidator"), cell(raw.get("ip_name") or "unknown")],
@@ -493,11 +509,23 @@ def _listing_flowables(entry: dict, story: list) -> None:
 
     links = []
     if raw.get("details_pdf_url"):
-        links.append(f"Details PDF: {raw['details_pdf_url']}")
+        links.append(_pdf_link("Full details (IBBI PDF)", raw["details_pdf_url"]))
     if raw.get("notice_pdf_url"):
-        links.append(f"Notice PDF: {raw['notice_pdf_url']}")
+        links.append(_pdf_link("Auction notice (PDF)", raw["notice_pdf_url"]))
+    # Part 9 (owner request 2026-08-14): the "deeper research" link. Note
+    # what this is NOT: IBBI's own notice/details PDFs are legal/text
+    # documents and don't include asset photos in any sample seen so far
+    # (see chat, not re-litigated in code comments). auction_platform_url
+    # -- when present -- points at the third-party e-auction platform
+    # actually running the sale, which is where photos (if published
+    # anywhere at all) and any further asset detail would realistically
+    # live, not something this project scrapes itself.
+    if raw.get("auction_platform_url"):
+        links.append(_pdf_link("Auction platform (bidding, possible photos)", raw["auction_platform_url"]))
     if links:
         story.append(Paragraph(" &nbsp;|&nbsp; ".join(links), _STYLE_FLAG))
+    else:
+        story.append(Paragraph("No detail links available for this listing yet.", _STYLE_FLAG))
 
     story.append(HRFlowable(width="100%", color=colors.HexColor("#dddddd"), spaceBefore=6, spaceAfter=6))
 
