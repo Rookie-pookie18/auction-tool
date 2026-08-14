@@ -36,7 +36,7 @@ import os
 from datetime import date
 
 import config
-from pipeline import run_pipeline, filter_assembled_by_location
+from pipeline import run_pipeline, filter_assembled_by_location, filter_assembled_by_asset_type
 from report.pdf import generate_report, categorize_assembled
 from email_delivery.smtp_send import send_report_email
 
@@ -89,6 +89,21 @@ if config.LOCATION_FILTER_ENABLED:
         "(all three groups still counted, none silently dropped)"
     )
 
+# Part 9 (owner request 2026-08-14, item 1): report-only asset-type
+# exclusion (cars/vehicles) -- same report-only pattern as the location
+# filter above, chained after it. See config.py's "Report asset-type
+# exclusion filter" section for scope/why "loan-recovery" isn't covered.
+asset_filter_result = None
+if config.ASSET_EXCLUSION_ENABLED:
+    asset_filter_result = filter_assembled_by_asset_type(report_assembled)
+    report_assembled = asset_filter_result["kept"]
+    print(
+        f"  asset-type filter: {len(report_assembled)} kept, "
+        f"{len(asset_filter_result['excluded_asset_type'])} excluded as "
+        "vehicle/car listings (loan-recovery exclusion not applicable -- "
+        "no loan-recovery source scraped yet)"
+    )
+
 print("\n--- Building the PDF ---")
 run_summary = {
     "store_summary": result["store_summary"],
@@ -99,6 +114,10 @@ if location_filter_result is not None:
     run_summary["location_filter"] = {
         "excluded_other_location": len(location_filter_result["excluded_other_location"]),
         "excluded_unknown_location": len(location_filter_result["excluded_unknown_location"]),
+    }
+if asset_filter_result is not None:
+    run_summary["asset_filter"] = {
+        "excluded_asset_type": len(asset_filter_result["excluded_asset_type"]),
     }
 
 pdf_path = generate_report(report_assembled, run_summary=run_summary)
