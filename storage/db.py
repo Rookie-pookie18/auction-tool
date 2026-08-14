@@ -79,6 +79,13 @@ CREATE TABLE IF NOT EXISTS listings (
     cin              TEXT,
     emd_amount       INTEGER,
     location         TEXT,
+    -- Added 2026-08-14, owner request (Part 9): derived from `location`
+    -- above by scraper.ibbi._derive_state_from_location() at parse time,
+    -- not independently scraped -- see that function's docstring. None
+    -- when the location text has no recognized state/UT name; the reason
+    -- lands in `flags` (below), same never-silent pattern as
+    -- possession_status/land_classification.
+    state            TEXT,
     auction_platform TEXT,
     auction_platform_url TEXT,
     plot_area_mentions TEXT,   -- JSON list, stored as text
@@ -194,6 +201,7 @@ _LISTINGS_COLUMN_MIGRATIONS = {
     "possession_status": "TEXT",
     "land_classification": "TEXT",
     "notice_pdf_parsed": "INTEGER DEFAULT 0",
+    "state": "TEXT",
 }
 
 
@@ -262,11 +270,11 @@ def upsert_listing(conn: sqlite3.Connection, record) -> dict:
                 listing_key, corporate_debtor, ip_name, notice_type,
                 nature_of_assets, reserve_price, auction_date, notice_date,
                 emd_due_date, notice_pdf_url, details_pdf_url, cin,
-                emd_amount, location, auction_platform, auction_platform_url,
+                emd_amount, location, state, auction_platform, auction_platform_url,
                 plot_area_mentions, flags, details_pdf_parsed,
                 possession_status, land_classification, notice_pdf_parsed,
                 first_seen_at, last_seen_at, raw_json
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 key,
@@ -283,6 +291,7 @@ def upsert_listing(conn: sqlite3.Connection, record) -> dict:
                 rec.get("cin"),
                 rec.get("emd_amount"),
                 rec.get("location"),
+                rec.get("state"),
                 rec.get("auction_platform"),
                 rec.get("auction_platform_url"),
                 json.dumps(rec.get("plot_area_mentions") or []),
@@ -353,7 +362,7 @@ def upsert_listing(conn: sqlite3.Connection, record) -> dict:
             """
             UPDATE listings SET
                 notice_pdf_url = ?, details_pdf_url = ?, cin = ?,
-                emd_amount = ?, location = ?, auction_platform = ?,
+                emd_amount = ?, location = ?, state = ?, auction_platform = ?,
                 auction_platform_url = ?, plot_area_mentions = ?, flags = ?,
                 details_pdf_parsed = ?, possession_status = ?,
                 land_classification = ?, notice_pdf_parsed = ?,
@@ -363,7 +372,7 @@ def upsert_listing(conn: sqlite3.Connection, record) -> dict:
             (
                 rec.get("notice_pdf_url"), rec.get("details_pdf_url"),
                 rec.get("cin"), rec.get("emd_amount"), rec.get("location"),
-                rec.get("auction_platform"), rec.get("auction_platform_url"),
+                rec.get("state"), rec.get("auction_platform"), rec.get("auction_platform_url"),
                 json.dumps(rec.get("plot_area_mentions") or []),
                 json.dumps(rec.get("flags") or []),
                 int(bool(rec.get("details_pdf_parsed"))),
@@ -393,7 +402,7 @@ def upsert_listing(conn: sqlite3.Connection, record) -> dict:
         UPDATE listings SET
             reserve_price = ?, auction_date = ?, notice_date = ?,
             emd_due_date = ?, notice_pdf_url = ?, details_pdf_url = ?,
-            cin = ?, emd_amount = ?, location = ?, auction_platform = ?,
+            cin = ?, emd_amount = ?, location = ?, state = ?, auction_platform = ?,
             auction_platform_url = ?, plot_area_mentions = ?, flags = ?,
             details_pdf_parsed = ?, possession_status = ?,
             land_classification = ?, notice_pdf_parsed = ?,
@@ -405,7 +414,7 @@ def upsert_listing(conn: sqlite3.Connection, record) -> dict:
             rec.get("notice_date"), rec.get("emd_due_date"),
             rec.get("notice_pdf_url"), rec.get("details_pdf_url"),
             rec.get("cin"), rec.get("emd_amount"), rec.get("location"),
-            rec.get("auction_platform"), rec.get("auction_platform_url"),
+            rec.get("state"), rec.get("auction_platform"), rec.get("auction_platform_url"),
             json.dumps(rec.get("plot_area_mentions") or []),
             json.dumps(rec.get("flags") or []),
             int(bool(rec.get("details_pdf_parsed"))),
