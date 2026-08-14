@@ -81,6 +81,7 @@ from reportlab.lib.enums import TA_LEFT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
+from reportlab.pdfgen.canvas import Canvas
 from reportlab.platypus import (
     HRFlowable,
     ListFlowable,
@@ -91,6 +92,43 @@ from reportlab.platypus import (
     Table,
     TableStyle,
 )
+
+
+# ---------------------------------------------------------------------------
+# Page numbers (Part 9, owner request 2026-08-14). Standard reportlab
+# two-pass technique: SimpleDocTemplate only knows the CURRENT page number
+# while drawing, not the final total, so showPage() is overridden to stash
+# each page's finished canvas state instead of flushing it immediately;
+# save() then replays every stashed page, now that the true total page
+# count is known, drawing "Page X of N" on each before the real showPage/
+# save happens. No layout-flowable changes needed elsewhere in this file --
+# doc.build(..., canvasmaker=_NumberedCanvas) below is the only call site.
+# ---------------------------------------------------------------------------
+class _NumberedCanvas(Canvas):
+    def __init__(self, *args, **kwargs):
+        Canvas.__init__(self, *args, **kwargs)
+        self._saved_page_states = []
+
+    def showPage(self):
+        self._saved_page_states.append(dict(self.__dict__))
+        self._startPage()
+
+    def save(self):
+        total_pages = len(self._saved_page_states)
+        for state in self._saved_page_states:
+            self.__dict__.update(state)
+            self._draw_page_number(total_pages)
+            Canvas.showPage(self)
+        Canvas.save(self)
+
+    def _draw_page_number(self, total_pages: int):
+        self.setFont("Helvetica", 8)
+        self.setFillColor(colors.grey)
+        text = f"Page {self._pageNumber} of {total_pages}"
+        # Bottom-right, inside the doc's own margins (generate_report()
+        # below uses 1.8cm side / 1.6cm bottom margins) so this never
+        # collides with body content.
+        self.drawRightString(A4[0] - 1.8 * cm, 1.0 * cm, text)
 
 
 # ---------------------------------------------------------------------------
@@ -505,6 +543,21 @@ def build_story(categorized: dict, run_summary: Optional[dict] = None) -> list:
             summary_bits.append(f"{len(sp)} scrape problems this run (see below)")
     story.append(Paragraph(" &nbsp;|&nbsp; ".join(summary_bits), _STYLE_LABEL))
 
+    # Location filter (Part 9, owner request 2026-08-14) -- this report
+    # only ever contains listings pipeline.filter_assembled_by_location()
+    # kept; state the exclusion counts plainly rather than letting a
+    # smaller-than-expected report look like a scraping problem.
+    if run_summary and run_summary.get("location_filter"):
+        lf = run_summary["location_filter"]
+        regions = ", ".join(config.INCLUDED_LOCATIONS.keys())
+        story.append(Paragraph(
+            f"Location filter active — showing only: {regions}. "
+            f"{lf.get('excluded_other_location', 0)} listing(s) outside these locations "
+            f"and {lf.get('excluded_unknown_location', 0)} with location not yet known "
+            f"were excluded from this report.",
+            _STYLE_SECTION_NOTE,
+        ))
+
     _section(
         story, "Top-scored",
         "Ranked by a placeholder combined score (plain average of whatever 5A/5B/5C "
@@ -571,7 +624,7 @@ def generate_report(
         title="Auction Intelligence Daily Report",
     )
     story = build_story(categorized, run_summary=run_summary)
-    doc.build(story)
+    doc.build(story, canvasmaker=_NumberedCanvas)
     return output_path
 
 
