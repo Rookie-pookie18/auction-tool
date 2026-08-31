@@ -433,6 +433,7 @@ def filter_assembled_by_location(
 def filter_assembled_by_asset_type(
     assembled: list[dict],
     excluded_keywords: Optional[list[str]] = None,
+    registration_plate_pattern: Optional[str] = None,
 ) -> dict:
     """Owner request 2026-08-14 (Part 9, item 1): report-only exclude
     filter for vehicle/car listings. Same "report-only, kept OUT of
@@ -441,37 +442,58 @@ def filter_assembled_by_asset_type(
     for the keyword list, and for why this only covers "cars" and not
     "loan-recovery" (no source for the latter exists yet).
 
-    A listing's `nature_of_assets` text is matched case-insensitively,
-    `\\b`-bounded, against every keyword in excluded_keywords -- a match
-    anywhere excludes the whole listing (see config.py docstring on why
-    a mixed "land + vehicle" listing is still excluded, not kept for its
-    land).
+    A listing's `nature_of_assets` text is excluded if EITHER:
+      1. it matches one of excluded_keywords, case-insensitively,
+         `\\b`-bounded ("vehicle", "truck", etc.), or
+      2. it contains an Indian vehicle registration plate
+         (registration_plate_pattern) -- added 2026-08-31 because
+         individual car/bike disposal listings (e.g. "Maruti Suzuki -
+         Swift Dzire VXI MH02EK5147") are often just a make/model + plate
+         with no keyword like "car"/"vehicle" in the text at all, so (1)
+         alone missed them. See config.py's
+         ASSET_REGISTRATION_PLATE_PATTERN docstring for detail/validation.
+    A match on either signal excludes the whole listing (see config.py
+    docstring on why a mixed "land + vehicle" listing is still excluded,
+    not kept for its land).
 
     excluded_keywords: None -> config.EXCLUDED_ASSET_KEYWORDS. Pass an
         explicit list to override (e.g. in a test).
+    registration_plate_pattern: None -> config.ASSET_REGISTRATION_PLATE_PATTERN.
+        Pass an explicit regex string to override, or "" to disable this
+        signal and fall back to keyword-only matching.
 
     Returns:
       {
-        "kept": [entry, ...],              -- no excluded keyword found
+        "kept": [entry, ...],              -- neither signal matched
         "excluded_asset_type": [entry, ...],-- nature_of_assets matched
-                                                one of excluded_keywords
+                                                a keyword or a plate
       }
     Listings with no nature_of_assets text at all are kept -- absence of
     the field is not evidence it's a vehicle listing, same "never
     penalize missing data" principle used throughout this project.
     """
     excluded_keywords = config.EXCLUDED_ASSET_KEYWORDS if excluded_keywords is None else excluded_keywords
+    registration_plate_pattern = (
+        config.ASSET_REGISTRATION_PLATE_PATTERN
+        if registration_plate_pattern is None
+        else registration_plate_pattern
+    )
     patterns = [
         re.compile(r"\b" + re.escape(kw) + r"\b", re.IGNORECASE)
         for kw in excluded_keywords
     ]
+    plate_pattern = re.compile(registration_plate_pattern) if registration_plate_pattern else None
 
     kept: list[dict] = []
     excluded_asset_type: list[dict] = []
 
     for entry in assembled:
         text = (entry.get("raw") or {}).get("nature_of_assets")
-        if text and any(p.search(text) for p in patterns):
+        matched = bool(text) and (
+            any(p.search(text) for p in patterns)
+            or (plate_pattern is not None and bool(plate_pattern.search(text)))
+        )
+        if matched:
             excluded_asset_type.append(entry)
         else:
             kept.append(entry)
