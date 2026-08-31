@@ -185,6 +185,24 @@ EXCLUDED_ASSET_KEYWORDS = [
     "scooter", "motorcycle", "motorbike", "auto rickshaw",
 ]
 
+# Owner report 2026-08-31: keyword list above missed listings like "Maruti
+# Suzuki - Swift Dzire VXI MH02EK5147" or "Honda City 1.5 SV MT MH02EE0955"
+# -- individual car/bike disposals (seen under Jet Airways (India) Limited)
+# where nature_of_assets is just a make/model + registration plate, with no
+# word like "car"/"vehicle" anywhere in the text, so the \b-bounded keyword
+# match above never fires on them.
+#
+# Rather than try to keep a keyword list of every car brand/model (Maruti,
+# Honda, Audi, BMW, Toyota, Skoda, Swaraj Mazda, ... -- open-ended and will
+# always miss the next one), this matches the Indian vehicle registration
+# plate format instead: 2 letters (state) + 1-2 digits (RTO code) + 1-3
+# letters (series) + 4 digits (number), e.g. DL2CAQ4409, MH02EK5147,
+# MH12JS0100. Verified against the current DB (2026-08-31): matches all 24
+# listings that are individual car/bike/mini-truck disposals, including
+# ones EXCLUDED_ASSET_KEYWORDS above misses entirely, with zero false
+# positives among the other 521 listings checked.
+ASSET_REGISTRATION_PLATE_PATTERN = r"\b[A-Z]{2}\d{1,2}[A-Z]{1,3}\d{4}\b"
+
 # ---------------------------------------------------------------------------
 # Part 5A scoring internals (price_vs_reserve + location_match only).
 # SCORE_WEIGHTS above stays all-None until 5B/5C are done and the owner
