@@ -177,6 +177,13 @@ def send_report_email(
     msg["Subject"] = subject
     msg["From"] = config.EMAIL_FROM
     msg["To"] = config.EMAIL_TO
+    if config.EMAIL_CC:
+        # Optional -- if unset, no Cc header is added and this is a plain
+        # single-recipient send exactly as before. smtplib's
+        # server.send_message() below reads To+Cc (+Bcc) headers together
+        # to build the actual RCPT TO envelope, so setting this header is
+        # the whole fix -- no separate recipient list needed.
+        msg["Cc"] = config.EMAIL_CC
     msg.set_content(body)
 
     with open(pdf_path, "rb") as f:

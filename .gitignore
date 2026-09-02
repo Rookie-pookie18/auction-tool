@@ -1,5 +1,11 @@
 data/mca_company_master/*.csv
 
+# Local secrets (GEMINI_API_KEY, SMTP_APP_PASSWORD, EMAIL_FROM/TO/CC) --
+# code comments in config.py/README.md already assumed this was ignored,
+# but it was never actually added here. Fixed so a local .env can never
+# be accidentally committed.
+.env
+
 # Flagged 2026-08-11 (Part 7A build): neither the real DB
 # (config.DB_PATH = data/auctions.db) nor test_part7a.py's throwaway
 # test DB were ever covered here -- a pre-existing gap, not something

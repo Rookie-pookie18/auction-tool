@@ -25,11 +25,15 @@
 #   SMTP_APP_PASSWORD  -- Part 8A, https://myaccount.google.com/apppasswords
 #   EMAIL_FROM         -- the Gmail address the App Password belongs to
 #   EMAIL_TO           -- where the report should land (can equal EMAIL_FROM)
-# (EMAIL_FROM/EMAIL_TO aren't secret in the sensitive-credential sense, but
-# stored as Actions secrets anyway for simplicity -- one place for every
-# per-owner value this workflow needs, none of it in a tracked file. Repo
-# "variables" instead of "secrets" would work equally well for these two
-# specifically, if the owner prefers that split later.)
+# Optional repo secret:
+#   EMAIL_CC           -- a second address CC'd on the same report email;
+#                         leave unset/empty for a plain single-recipient
+#                         send (comma-separate for more than one CC)
+# (EMAIL_FROM/EMAIL_TO/EMAIL_CC aren't secret in the sensitive-credential
+# sense, but stored as Actions secrets anyway for simplicity -- one place
+# for every per-owner value this workflow needs, none of it in a tracked
+# file. Repo "variables" instead of "secrets" would work equally well for
+# these specifically, if the owner prefers that split later.)
 
 name: Daily auction report
 
@@ -98,6 +102,7 @@ jobs:
           SMTP_APP_PASSWORD: ${{ secrets.SMTP_APP_PASSWORD }}
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          EMAIL_CC: ${{ secrets.EMAIL_CC }}
         run: python main.py
 
       - name: Commit updated DB back to the repo

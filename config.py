@@ -525,6 +525,12 @@ REPORT_TOP_N = 15
 # used for GEMINI_API_KEY/SMTP_APP_PASSWORD, or export them in the shell.
 EMAIL_FROM = os.environ.get("EMAIL_FROM")   # owner's Gmail address (the one the App Password belongs to)
 EMAIL_TO = os.environ.get("EMAIL_TO")       # where the report should land; can equal EMAIL_FROM
+# EMAIL_CC (optional, added later): a second address CC'd on the same
+# report email -- unlike EMAIL_FROM/EMAIL_TO, this is NOT required by
+# _require_email_config() below, so leaving it unset just means no CC
+# line is added (single-recipient send, unchanged behavior). Supports
+# a comma-separated list of addresses if more than one CC is wanted.
+EMAIL_CC = os.environ.get("EMAIL_CC")
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 587         # STARTTLS submission port, not implicit-TLS 465
 SMTP_PASSWORD = os.environ.get("SMTP_APP_PASSWORD")   # never hardcoded

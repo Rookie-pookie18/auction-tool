@@ -85,12 +85,16 @@ reasoning — confirmed on a real run (5/5 on-topic hits across the
    `GEMINI_API_KEY`), and set `EMAIL_FROM`/`EMAIL_TO` the same way
    (`EMAIL_FROM=you@gmail.com`, `EMAIL_TO=you@gmail.com` — can be the
    same address or a different inbox you actually read every morning).
+   Optionally also set `EMAIL_CC=someone-else@example.com` to CC the
+   same report to a second inbox (comma-separate for more than one);
+   leave it unset for a plain single-recipient send.
 
 ## Daily automated run (Part 8B) — GitHub Actions cron
 `.github/workflows/daily_report.yml` runs `main.py` on a schedule
 (`ubuntu-latest`, no owner machine needs to be on). One-time setup:
 1. In the repo's GitHub Settings → Secrets and variables → Actions, add:
    `GEMINI_API_KEY`, `SMTP_APP_PASSWORD`, `EMAIL_FROM`, `EMAIL_TO`.
+   Optionally also add `EMAIL_CC` to CC the report to a second inbox.
 2. Confirm the `mca-data-v1` Release (with `mca_company_master.zip`
    attached) exists on the repo — see `PROJECT_STATUS.md` decision (30)
    if it needs (re)creating.
