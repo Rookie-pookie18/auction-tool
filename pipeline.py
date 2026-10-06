@@ -249,7 +249,24 @@ def run_pipeline(
             )
             (reenrich_idx if needs else reused_idx).append(i)
 
-        # --- 6. Re-run Part 6 only for reenrich_idx, via the existing batch
+        # --- 5b. Cap how many listings enrich in one run (2026-10-06) ---
+        # See config.MAX_ENRICHMENTS_PER_RUN for why. Listings that have no
+        # enrichment row at all are enriched first; anything over the cap is
+        # pushed into reused_idx and picked up by a later run.
+        cap = getattr(config, "MAX_ENRICHMENTS_PER_RUN", None)
+        if cap is not None and len(reenrich_idx) > cap:
+            reenrich_idx.sort(
+                key=lambda i: get_enrichment(conn, store_results_list[i]["listing_key"]) is not None
+            )
+            deferred = reenrich_idx[cap:]
+            reenrich_idx = reenrich_idx[:cap]
+            reused_idx.extend(deferred)
+            print(
+                f"  enrichment cap: {cap} listings enriched this run, "
+                f"{len(deferred)} deferred to a later run."
+            )
+      
+      # --- 6. Re-run Part 6 only for reenrich_idx, via the existing batch
         # helpers (their pacing/retry logic already confirmed in 6A/6B/6C) ---
         subset_records = [records[i] for i in reenrich_idx]
 
