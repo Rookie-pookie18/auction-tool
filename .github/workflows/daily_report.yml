@@ -65,11 +65,9 @@ permissions:
 jobs:
   run-report:
     runs-on: ubuntu-latest
-    timeout-minutes: 240   # this project's own real-run timing (Part 7A/8A
-                           # confirmations) never approached this; a
-                           # generous ceiling in case Gemini/MCA/news
-                           # retries stack up on a bad day, not a tight
-                           # estimate.
+        timeout-minutes: 350   # backstop only. The pipeline step below has its
+                           # own tighter limit so the DB commit step still
+                           # gets to run. GitHub's hard max is 360.
     steps:
       - name: Check out repo
         uses: actions/checkout@v4
@@ -97,6 +95,7 @@ jobs:
           unzip -o data/mca_company_master/mca_company_master.zip -d data/mca_company_master
 
       - name: Run daily pipeline (scrape, score, enrich, PDF, email)
+        timeout-minutes: 300
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           SMTP_APP_PASSWORD: ${{ secrets.SMTP_APP_PASSWORD }}
@@ -106,6 +105,7 @@ jobs:
         run: python main.py
 
       - name: Commit updated DB back to the repo
+        if: always()
         # Decision (31) -- the actual persistence fix. data/auctions.db is
         # now a TRACKED file (see .gitignore's decision (31) comment), so
         # a plain `git add` + `git commit` + `git push` here is enough --
