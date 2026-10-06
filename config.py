@@ -536,3 +536,22 @@ SMTP_PORT = 587         # STARTTLS submission port, not implicit-TLS 465
 SMTP_PASSWORD = os.environ.get("SMTP_APP_PASSWORD")   # never hardcoded
 SMTP_TIMEOUT_SECONDS = 20
 EMAIL_SUBJECT_PREFIX = "[Auction Report]"   # Claude-picked default, fine to tune later
+
+# ---------------------------------------------------------------------------
+# Per-run enrichment cap (added 2026-10-06)
+# ---------------------------------------------------------------------------
+# Part 6 enrichment (Gemini + MCA + news) is paced at ~10s/listing by
+# GEMINI_REQUEST_DELAY_SECONDS + NEWS_SEARCH_REQUEST_DELAY_SECONDS, and
+# pipeline.py writes NOTHING to the enrichment table until the whole batch
+# finishes. So a backlog (e.g. the DB going stale while Actions was
+# blocked Sep 17-30) produces a batch too big to finish inside a runner's
+# time limit -- it gets killed, saves nothing, and the identical backlog
+# is still there tomorrow. A permanent loop.
+#
+# This caps how many listings get enriched in any single run. Overflow is
+# deferred to the next run, so a backlog drains over several days instead
+# of failing forever. Listings with no enrichment row at all are done
+# first, so nothing is left permanently blank.
+#
+# Set to None to disable the cap (original unbounded behavior).
+MAX_ENRICHMENTS_PER_RUN = 150
