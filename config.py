@@ -530,19 +530,7 @@ EMAIL_TO = os.environ.get("EMAIL_TO")       # where the report should land; can 
 # _require_email_config() below, so leaving it unset just means no CC
 # line is added (single-recipient send, unchanged behavior). Supports
 # a comma-separated list of addresses if more than one CC is wanted.
-#
-# CHANGED 2026-10-20: EMAIL_CC_ALWAYS lists addresses CC'd on every report
-# regardless of the EMAIL_CC env var / repo secret -- merged with it
-# (deduped, case-insensitive) so the existing secret keeps working
-# unchanged. Committed here because Actions secrets can't be appended to
-# without knowing their current value.
-EMAIL_CC_ALWAYS = ["mgmt@thesuntek.com"]
-_cc_addrs = []
-for _addr in (os.environ.get("EMAIL_CC") or "").split(",") + EMAIL_CC_ALWAYS:
-    _addr = _addr.strip()
-    if _addr and _addr.lower() not in {a.lower() for a in _cc_addrs}:
-        _cc_addrs.append(_addr)
-EMAIL_CC = ", ".join(_cc_addrs) or None
+EMAIL_CC = os.environ.get("EMAIL_CC")
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 587         # STARTTLS submission port, not implicit-TLS 465
 SMTP_PASSWORD = os.environ.get("SMTP_APP_PASSWORD")   # never hardcoded
